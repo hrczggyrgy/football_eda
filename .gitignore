@@ -39,4 +39,4 @@ Thumbs.db
 # New output directories
 output/
 output_test/
-reports/
+# reports/  -- reports are now tracked

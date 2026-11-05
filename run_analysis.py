@@ -34,8 +34,15 @@ from analysis.advanced_insights import (
     analyze_halftime_deficit_recovery, analyze_volatility_streakiness,
     analyze_pooled_vs_within_league, analyze_home_advantage_changes
 )
+from analysis.new_insights import (
+    analyze_opponent_dependent_performance, analyze_home_advantage_components,
+    analyze_close_match_dependence, analyze_rest_asymmetry,
+    analyze_performance_indicators_lead_results, analyze_adaptation_after_promotion,
+    build_promotion_relegation_transitions
+)
 from visualization.plots import create_all_figures
 from visualization.insight_plots import create_advanced_figures
+from visualization.new_insight_plots import create_all_new_figures
 
 
 def parse_args():
@@ -51,6 +58,7 @@ def parse_args():
                         default=['1920', '2021', '2122', '2223', '2324', '2425', '2526'],
                         help='Season codes to analyze (e.g., 1920 for 2019/20)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--skip-new', action='store_true', help='Skip new insight analyses')
     return parser.parse_args()
 
 
@@ -93,7 +101,7 @@ def main():
     # -----------------------------------------------------------------
     # 1. DATA LOADING
     # -----------------------------------------------------------------
-    print("\n[1/6] Loading data...")
+    print("\n[1/7] Loading data...")
     master = build_master_dataset(DATA_DIR, TARGET_LEAGUES, SEASONS, usecols=CORE_COLS)
     print(f"  Master matches: {len(master)}")
     print(f"  Leagues: {master['Div'].unique()}")
@@ -121,7 +129,7 @@ def main():
     # -----------------------------------------------------------------
     # 2. FEATURE ENGINEERING
     # -----------------------------------------------------------------
-    print("\n[2/6] Engineering features...")
+    print("\n[2/7] Engineering features...")
     team_matches = add_efficiency_ratios(team_matches)
     team_matches = add_rolling_features(team_matches, window=5, min_periods=3)
     team_matches = add_opponent_strength(team_matches)
@@ -135,7 +143,7 @@ def main():
     # -----------------------------------------------------------------
     # 3. ADVANCED FEATURES
     # -----------------------------------------------------------------
-    print("\n[3/6] Computing advanced features...")
+    print("\n[3/7] Computing advanced features...")
     team_season = add_season_order(team_season)
     team_season = add_next_season_metrics(team_season)
     
@@ -147,9 +155,9 @@ def main():
     print(f"  Clusters assigned: {team_season['Cluster'].notna().sum()} team-seasons")
     
     # -----------------------------------------------------------------
-    # 4. STATISTICAL ANALYSIS
+    # 4. STATISTICAL ANALYSIS (Core)
     # -----------------------------------------------------------------
-    print("\n[4/6] Running statistical analysis...")
+    print("\n[4/7] Running core statistical analysis...")
     
     ha_results = analyze_home_advantage(master)
     print(f"  Home advantage: {len(ha_results['by_league'])} leagues analyzed")
@@ -179,18 +187,18 @@ def main():
     # -----------------------------------------------------------------
     # 4b. ADVANCED STATISTICAL ANALYSES (Priority A-F)
     # -----------------------------------------------------------------
-    print("\n[4b/6] Running advanced analyses...")
+    print("\n[4b/7] Running advanced analyses (A-F)...")
     
     # Priority A: Finishing persistence
     finishing_results = analyze_finishing_persistence(team_matches, min_matches=20)
     print(f"  Finishing persistence: early vs late season")
     
-    # Priority B: Team profile changes
+    # Priority B: Team profile changes (with fixed promo/releg matching)
     profile_changes = analyze_team_profile_changes(team_season)
     print(f"  Team profile changes: consecutive season trajectories")
     
-    # Priority C: Halftime deficit recovery
-    ht_recovery = analyze_halftime_deficit_recovery(master, team_season)
+    # Priority C: Halftime deficit recovery (with fixed pre-match strength)
+    ht_recovery = analyze_halftime_deficit_recovery(master, team_season, team_matches)
     print(f"  HT deficit recovery: conditional on deficit, venue, strength")
     
     # Priority D: Volatility and streakiness
@@ -206,9 +214,42 @@ def main():
     print(f"  HA changes: league trends, balanced sample, COVID comparison")
     
     # -----------------------------------------------------------------
+    # 4c. NEW INSIGHT ANALYSES (6 Priority Questions)
+    # -----------------------------------------------------------------
+    if not args.skip_new:
+        print("\n[4c/7] Running new insight analyses...")
+        
+        # Question 1: Opponent-dependent performance
+        opp_dep = analyze_opponent_dependent_performance(team_matches, team_season, min_matches=20)
+        print(f"  Q1 Opponent-dependent performance: team-specific interaction slopes")
+        
+        # Question 2: Components of home advantage
+        ha_comp = analyze_home_advantage_components(master, team_matches, team_season)
+        print(f"  Q2 HA components: shot gen/suppression/conversion decomposition")
+        
+        # Question 3: Close-match dependence
+        close_match = analyze_close_match_dependence(team_matches, team_season, min_matches=20)
+        print(f"  Q3 Close-match dependence: one-goal win reliance & persistence")
+        
+        # Question 4: Rest asymmetry
+        rest_asym = analyze_rest_asymmetry(team_matches, master, min_matches=20)
+        print(f"  Q4 Rest asymmetry: observed league-fixture rest effects")
+        
+        # Question 5: Performance indicators leading results
+        perf_lead = analyze_performance_indicators_lead_results(team_matches, team_season, min_matches=20)
+        print(f"  Q5 Performance indicators leading results: lagged shot dominance")
+        
+        # Question 7: Adaptation after promotion (reliable transitions only)
+        promo_adapt = analyze_adaptation_after_promotion(team_matches, team_season, master)
+        print(f"  Q7 Adaptation after promotion: first-season trajectories")
+    else:
+        print("\n[4c/7] Skipping new insight analyses (--skip-new)")
+        opp_dep = ha_comp = close_match = rest_asym = perf_lead = promo_adapt = {}
+    
+    # -----------------------------------------------------------------
     # 5. VISUALIZATION
     # -----------------------------------------------------------------
-    print("\n[5/6] Creating visualizations...")
+    print("\n[5/7] Creating visualizations...")
     half_eff = eff_results['half_season']
     fig_files = create_all_figures(
         ha_results, team_season, shot_results, half_eff, htft_results, master,
@@ -218,19 +259,30 @@ def main():
     )
     print(f"  Created {len(fig_files)} core figures")
     
-    # Advanced figures
+    # Advanced figures (A-F) - uses legacy interface (tables saved to figures dir)
     adv_fig_files = create_advanced_figures(
         finishing_results, profile_changes, ht_recovery,
         volatility, pooled_vs_within, ha_changes,
         output_dir=str(OUTPUT_DIRS['figures'])
     )
-    print(f"  Created {len(adv_fig_files)} advanced figures")
+    print(f"  Created {len(adv_fig_files)} advanced figures (A-F)")
     fig_files.extend(adv_fig_files)
+    
+    # New insight figures
+    if not args.skip_new:
+        new_fig_files = create_all_new_figures(
+            opp_dep, ha_comp, close_match,
+            rest_asym, perf_lead, promo_adapt,
+            figures_dir=str(OUTPUT_DIRS['figures']),
+            tables_dir=str(OUTPUT_DIRS['tables'])
+        )
+        print(f"  Created {len(new_fig_files)} new insight figures (1-6)")
+        fig_files.extend(new_fig_files)
     
     # -----------------------------------------------------------------
     # 6. EXPORT RESULTS
     # -----------------------------------------------------------------
-    print("\n[6/6] Exporting results...")
+    print("\n[6/7] Exporting results...")
     
     # Machine-readable tables
     ha_results['by_league'].reset_index().to_csv(OUTPUT_DIRS['tables'] / 'table_home_advantage_by_league.csv', index=False)
@@ -369,6 +421,26 @@ def main():
             'tableE_correlation_comparison.csv',
             'tableF_league_season_ha.csv',
             'tableF_balanced_sample_ha.csv',
+            # New insight tables
+            'table1_opponent_dependent_performance.csv',
+            'table2a_team_season_ha_components.csv',
+            'table2b_paired_fixture_diffs.csv',
+            'table2c_league_ha_components.csv',
+            'table3a_season_outcome_composition.csv',
+            'table3b_early_late_comparison.csv',
+            'table3c_team_close_match_summary.csv',
+            'table3d_shot_dominance_early_late.csv',
+            'table4a_rest_heatmap.csv',
+            'table4b_rest_effects.csv',
+            'table4c_shot_effects.csv',
+            'table4d_rest_density.csv',
+            'table5_window_10_10.csv',
+            'table5_window_15_15.csv',
+            'table5_window_half_half.csv',
+            'table6a_promoted_trajectory.csv',
+            'table6b_promoted_team_curves.csv',
+            'table6c_promotion_transition_table.csv',
+            'table6d_relegated_trajectory.csv',
         ],
         'metadata': ['data_audit_summary.json', 'feature_dictionary.json', 'manifest.json'],
         'data_files': ['master_matches.parquet', 'team_matches.parquet'],
@@ -380,12 +452,27 @@ def main():
     with open(OUTPUT_DIRS['metadata'] / 'manifest.json', 'w') as f:
         json.dump(manifest, f, indent=2)
     
+    # -----------------------------------------------------------------
+    # 7. VALIDATION & SUMMARY
+    # -----------------------------------------------------------------
+    print("\n[7/7] Validation summary...")
+    
+    # Run tests
+    import subprocess
+    result = subprocess.run([sys.executable, '-m', 'pytest', 'tests/test_core.py', '-v', '--tb=short'], 
+                           capture_output=True, text=True, cwd=Path(__file__).parent)
+    if result.returncode == 0:
+        print("  All 14 core tests PASSED")
+    else:
+        print("  Some tests FAILED:")
+        print(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
+    
     print("\n" + "="*60)
     print("PIPELINE COMPLETE")
     print("="*60)
     print(f"Output directory: {OUTPUT_DIRS['root']}")
     print(f"Figures: {len(fig_files)} PNG files in {OUTPUT_DIRS['figures']}")
-    print(f"Tables: 9 CSV files in {OUTPUT_DIRS['tables']}")
+    print(f"Tables: {len(manifest['tables'])} CSV files in {OUTPUT_DIRS['tables']}")
     print(f"Data: 2 Parquet files in {OUTPUT_DIRS['data']}")
     print(f"Metadata: 3 JSON files in {OUTPUT_DIRS['metadata']}")
 
