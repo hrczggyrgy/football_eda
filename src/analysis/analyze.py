@@ -50,6 +50,7 @@ def analyze_home_advantage(master: pd.DataFrame) -> Dict:
     results['by_season'] = ha_season
     
     # Statistical significance per league
+    # Correct null: among decisive matches, home win probability = 0.5 (symmetric HA null)
     sig_results = {}
     for league in master['Div'].unique():
         lg_data = master[master['Div'] == league]
@@ -57,14 +58,18 @@ def analyze_home_advantage(master: pd.DataFrame) -> Dict:
         away_wins = (lg_data['FTR'] == 'A').sum()
         draws = (lg_data['FTR'] == 'D').sum()
         total = len(lg_data)
-        draw_rate = draws / total
-        expected_home_win_rate = (1 - draw_rate) / 2
-        result = binomtest(home_wins, n=total - draws, p=expected_home_win_rate, alternative='greater')
+        decisive = total - draws
+        # Symmetric null: p = 0.5 for home win among decisive matches
+        result = binomtest(home_wins, n=decisive, p=0.5, alternative='greater')
         sig_results[league] = {
             'home_win_pct': home_wins / total,
             'away_win_pct': away_wins / total,
+            'home_win_pct_decisive': home_wins / decisive if decisive > 0 else np.nan,
+            'away_win_pct_decisive': away_wins / decisive if decisive > 0 else np.nan,
+            'draw_pct': draws / total,
             'p_value': result.pvalue,
-            'significant': result.pvalue < 0.05
+            'significant': result.pvalue < 0.05,
+            'n_decisive': int(decisive)
         }
     results['significance'] = sig_results
     
@@ -168,38 +173,45 @@ def analyze_efficiency_persistence(team_matches: pd.DataFrame, min_matches: int 
     results['half_season_persistence'] = half_persistence
     
     # Season-to-season persistence (requiring genuinely consecutive seasons in same division)
+    # CRITICAL FIX: Create lag/lead pairs on COMPLETE chronological table FIRST,
+    # then explicitly require Season_Num diff == 1 for each pair.
+    # This avoids losing the first valid adjacent-season pair or bridging gaps after filtering.
+    
     season_order = {'1920':0, '2021':1, '2122':2, '2223':3, '2324':4, '2425':5, '2526':6}
+    team_season = team_season.copy()
     team_season['Season_Num'] = team_season['Season'].map(season_order)
     team_season = team_season.sort_values(['Div', 'Team', 'Season_Num'])
     
-    # Identify consecutive seasons: same Div, same Team, Season_Num diff == 1
-    team_season['Prev_Season_Num'] = team_season.groupby(['Div', 'Team'])['Season_Num'].shift(1)
-    team_season['Consecutive'] = (team_season['Season_Num'] - team_season['Prev_Season_Num'] == 1)
+    # Create lead (next season) metrics on FULL table before any filtering
+    for metric in ['GPS', 'GPSOT', 'GAOS', 'PPG']:
+        team_season[f'Next_{metric}'] = team_season.groupby(['Div', 'Team'])[metric].shift(-1)
+    team_season['Next_Season_Num'] = team_season.groupby(['Div', 'Team'])['Season_Num'].shift(-1)
+    team_season['Next_Div'] = team_season.groupby(['Div', 'Team'])['Div'].shift(-1)
     
-    # Track transitions
+    # NOW filter: require same division AND exactly one season gap
+    valid_pairs = (
+        team_season['Next_Season_Num'].notna() & 
+        (team_season['Next_Season_Num'] - team_season['Season_Num'] == 1) &
+        (team_season['Next_Div'] == team_season['Div'])
+    )
+    
+    consecutive = team_season[valid_pairs].copy()
+    
+    # Track transitions on full table for reporting
+    team_season['Prev_Season_Num'] = team_season.groupby(['Div', 'Team'])['Season_Num'].shift(1)
     team_season['Prev_Div'] = team_season.groupby(['Team'])['Div'].shift(1)
     team_season['Div_Changed'] = (team_season['Div'] != team_season['Prev_Div'])
-    
-    # Gap seasons
     team_season['Season_Gap'] = team_season['Season_Num'] - team_season['Prev_Season_Num']
     
     # Report transition summary
     transition_summary = {
         'total_pairs': int(team_season['Prev_Season_Num'].notna().sum()),
-        'consecutive_same_div': int(team_season['Consecutive'].sum()),
+        'consecutive_same_div': int(valid_pairs.sum()),
         'div_changed': int(team_season['Div_Changed'].sum()),
         'gap_1_season': int((team_season['Season_Gap'] == 1).sum()),
         'gap_2plus_seasons': int((team_season['Season_Gap'] > 1).sum()),
     }
     results['season_transitions'] = transition_summary
-    
-    # Only use consecutive same-division seasons for persistence
-    consecutive = team_season[team_season['Consecutive']].copy()
-    
-    for metric in ['GPS', 'GPSOT', 'GAOS']:
-        consecutive[f'Next_{metric}'] = consecutive.groupby(['Div', 'Team'])[metric].shift(-1)
-    
-    consecutive['Next_PPG'] = consecutive.groupby(['Div', 'Team'])['PPG'].shift(-1)
     
     season_persistence = {}
     for metric in ['GPS', 'GPSOT', 'GAOS']:

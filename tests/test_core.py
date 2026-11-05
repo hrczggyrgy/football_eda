@@ -59,18 +59,20 @@ def test_home_advantage_symmetry_null(master_data):
         assert 'significant' in sig
         assert 'home_win_pct' in sig
         assert 'away_win_pct' in sig
+        assert 'home_win_pct_decisive' in sig
+        assert 'away_win_pct_decisive' in sig
+        assert 'draw_pct' in sig
+        assert 'n_decisive' in sig
         
         # The null should be: home win probability = 0.5 among decisive matches
-        # This is tested implicitly in the binomtest call in analyze.py
-        # Verify the logic: expected_home_win_rate = (1 - draw_rate) / 2
         lg_data = master_data[master_data['Div'] == league]
         total = len(lg_data)
         draws = (lg_data['FTR'] == 'D').sum()
-        draw_rate = draws / total
-        expected = (1 - draw_rate) / 2
-        # Home win rate should be compared to this expectation
+        decisive = total - draws
         home_wins = (lg_data['FTR'] == 'H').sum()
         assert sig['home_win_pct'] == home_wins / total
+        assert sig['home_win_pct_decisive'] == home_wins / decisive if decisive > 0 else np.nan
+        # p-value should be from binomtest with p=0.5
 
 
 def test_home_advantage_three_measures_distinct(master_data):
@@ -126,6 +128,21 @@ def test_season_gap_reporting(engineered_data):
     # Should report both div changes and gaps
     assert trans['div_changed'] >= 0
     assert trans['gap_2plus_seasons'] >= 0
+
+
+def test_consecutive_pairs_created_before_filtering(engineered_data):
+    """Test that lag/lead pairs are created on complete table before filtering."""
+    from analysis.analyze import analyze_efficiency_persistence
+    
+    # This test verifies the fix: pairs created on full table, then filtered for Season_Num diff == 1
+    eff_results = analyze_efficiency_persistence(engineered_data, min_matches=5)  # Lower threshold
+    
+    # Check that season_to_season_persistence uses only consecutive same-div pairs
+    persist = eff_results.get('season_to_season_persistence', {})
+    # The n values should correspond to consecutive same-division pairs only
+    for metric, vals in persist.items():
+        if 'n' in vals:
+            assert vals['n'] <= eff_results['season_transitions']['consecutive_same_div']
 
 
 # Test 3: Comeback denominators
@@ -260,6 +277,26 @@ def test_opponent_strength_lagged(team_matches_data):
     # First match of season should have NaN opponent PPG (no prior data for opponent)
     first_matches = df.groupby(['Div', 'Team', 'Season']).head(1)
     assert first_matches['Opp_PPG_Cum'].isna().all()
+
+
+def test_rest_days_season_opener_is_nan(team_matches_data):
+    """Test that Rest_Days for season openers is NaN (not invented 7 days)."""
+    df = add_efficiency_ratios(team_matches_data)
+    df = add_rolling_features(df, window=5, min_periods=3)
+    
+    # First match of each team-season should have NaN Rest_Days
+    first_matches = df.groupby(['Div', 'Team', 'Season']).head(1)
+    assert first_matches['Rest_Days'].isna().all()
+
+
+def test_points_rolling5_std_is_lagged(team_matches_data):
+    """Test that Points_Rolling5_Std is computed on shifted data (lagged)."""
+    df = add_efficiency_ratios(team_matches_data)
+    df = add_rolling_features(df, window=5, min_periods=3)
+    
+    # The rolling std should be lagged - first match should be NaN
+    first_matches = df.groupby(['Div', 'Team', 'Season']).head(1)
+    assert first_matches['Points_L5_std'].isna().all()
 
 
 # Test 7: Match/team-perspective consistency

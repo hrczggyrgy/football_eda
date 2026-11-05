@@ -52,15 +52,21 @@ def add_efficiency_ratios(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_rolling_features(df: pd.DataFrame, window: int = 5, min_periods: int = 3) -> pd.DataFrame:
-    """Add lagged rolling and expanding features per team-season."""
+    """Add lagged rolling and expanding features per team-season.
+    
+    FIXED: 
+    - Rest_Days for season openers is NaN (not invented 7 days)
+    - Points_Rolling5_Std is properly lagged (shifted before rolling)
+    - All rolling features use shift(1) to avoid leakage
+    """
     df = df.sort_values(['Div', 'Team', 'Season', 'Date']).copy()
     
     # Match number in season
     df['Match_Num'] = df.groupby(['Div', 'Team', 'Season']).cumcount() + 1
     
-    # Rest days
+    # Rest days - NaN for season openers (unknown, not invented)
     df['Rest_Days'] = df.groupby(['Div', 'Team', 'Season'])['Date'].diff().dt.days
-    df['Rest_Days'] = df['Rest_Days'].fillna(7)
+    # Do NOT fillna(7) - season opener rest is genuinely unknown
     
     # Group key for vectorized rolling
     df['_group_key'] = df.groupby(['Div', 'Team', 'Season']).ngroup()
@@ -69,10 +75,10 @@ def add_rolling_features(df: pd.DataFrame, window: int = 5, min_periods: int = 3
         if col not in df.columns:
             continue
         
-        # Shift by 1 to avoid leakage
+        # Shift by 1 to avoid leakage - THIS IS THE KEY FIX
         shifted = df.groupby(['Div', 'Team', 'Season'])[col].shift(1)
         
-        # Rolling mean/std
+        # Rolling mean/std on SHIFTED data
         rolled = shifted.groupby(df['_group_key']).rolling(window=window, min_periods=min_periods)
         df[f'{col}_L{window}'] = rolled.mean().reset_index(level=0, drop=True)
         df[f'{col}_L{window}_std'] = rolled.std().reset_index(level=0, drop=True)
@@ -112,59 +118,96 @@ def add_opponent_strength(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_team_season_metrics(team_matches: pd.DataFrame, min_matches: int = 20) -> pd.DataFrame:
-    """Aggregate team-match data to team-season level with derived metrics."""
-    agg_dict = {
-        'GF': 'sum', 'GA': 'sum', 'GD': 'sum',
-        'Points': 'sum',
-        'Shots': 'sum', 'Shots_OT': 'sum',
-        'Shots_Against': 'sum', 'Shots_OT_Against': 'sum',
-        'Yellow': 'sum', 'Red': 'sum', 'Fouls': 'sum',
-        'Corners': 'sum', 'Corners_Against': 'sum',
-        'Match_Num': 'max'  # total matches
-    }
+    """Aggregate team-match data to team-season level with derived metrics.
     
-    team_season = team_matches.groupby(['Div', 'Team', 'Season']).agg(**{
-        k: (k, v) for k, v in agg_dict.items()
-    }).reset_index()
+    FIXED: Uses metric-specific valid-match exposure for per-game rates.
+    Missing values in source data produce NaN (not 0) in sums via skipna=False.
+    """
+    # Track which metrics have valid data per match
+    metric_cols = ['GF', 'GA', 'GD', 'Points', 'Shots', 'Shots_OT', 
+                   'Shots_Against', 'Shots_OT_Against',
+                   'Yellow', 'Red', 'Fouls', 'Corners', 'Corners_Against']
     
-    team_season = team_season.rename(columns={'Match_Num': 'Matches'})
+    # For each metric, count valid (non-NaN) matches
+    valid_counts = team_matches.groupby(['Div', 'Team', 'Season'])[metric_cols].apply(
+        lambda x: x.notna().sum()
+    ).reset_index()
+    valid_counts.columns = ['Div', 'Team', 'Season'] + [f'{c}_Valid' for c in metric_cols]
+    
+    # Sums with skipna=False to preserve NaN for all-missing groups
+    sums = team_matches.groupby(['Div', 'Team', 'Season'])[metric_cols].sum(skipna=False).reset_index()
+    
+    # Match count (total rows, regardless of missingness)
+    match_counts = team_matches.groupby(['Div', 'Team', 'Season']).size().reset_index(name='Matches')
+    
+    # Merge
+    team_season = match_counts.merge(sums, on=['Div', 'Team', 'Season'])
+    team_season = team_season.merge(valid_counts, on=['Div', 'Team', 'Season'])
+    
     team_season = team_season[team_season['Matches'] >= min_matches].copy()
     
-    # Per-game rates
+    # Per-game rates using METRIC-SPECIFIC valid match exposure
     team_season['PPG'] = team_season['Points'] / team_season['Matches']
-    team_season['GF_PG'] = team_season['GF'] / team_season['Matches']
-    team_season['GA_PG'] = team_season['GA'] / team_season['Matches']
+    team_season['GF_PG'] = team_season['GF'] / team_season['GF_Valid'].replace(0, np.nan)
+    team_season['GA_PG'] = team_season['GA'] / team_season['GA_Valid'].replace(0, np.nan)
     team_season['GD_PG'] = team_season['GD'] / team_season['Matches']
-    team_season['Shots_PG'] = team_season['Shots'] / team_season['Matches']
-    team_season['Shots_OT_PG'] = team_season['Shots_OT'] / team_season['Matches']
-    team_season['Shots_Against_PG'] = team_season['Shots_Against'] / team_season['Matches']
+    team_season['Shots_PG'] = team_season['Shots'] / team_season['Shots_Valid'].replace(0, np.nan)
+    team_season['Shots_OT_PG'] = team_season['Shots_OT'] / team_season['Shots_OT_Valid'].replace(0, np.nan)
+    team_season['Shots_Against_PG'] = team_season['Shots_Against'] / team_season['Shots_Against_Valid'].replace(0, np.nan)
     
-    # Efficiency ratios
-    team_season['Shot_Accuracy'] = team_season['Shots_OT'] / team_season['Shots']
-    team_season['Opp_Shot_Accuracy'] = team_season['Shots_OT_Against'] / team_season['Shots_Against']
-    team_season['Goals_Per_Shot'] = team_season['GF'] / team_season['Shots']
-    team_season['Goals_Per_Shot_OT'] = team_season['GF'] / team_season['Shots_OT']
-    team_season['GA_Per_Opp_Shot'] = team_season['GA'] / team_season['Shots_Against']
-    team_season['GA_Per_Opp_Shot_OT'] = team_season['GA'] / team_season['Shots_OT_Against']
+    # Efficiency ratios (only where denominators > 0)
+    team_season['Shot_Accuracy'] = np.where(
+        team_season['Shots_Valid'] > 0, 
+        team_season['Shots_OT'] / team_season['Shots'], 
+        np.nan
+    )
+    team_season['Opp_Shot_Accuracy'] = np.where(
+        team_season['Shots_Against_Valid'] > 0, 
+        team_season['Shots_OT_Against'] / team_season['Shots_Against'], 
+        np.nan
+    )
+    team_season['Goals_Per_Shot'] = np.where(
+        team_season['Shots_Valid'] > 0, 
+        team_season['GF'] / team_season['Shots'], 
+        np.nan
+    )
+    team_season['Goals_Per_Shot_OT'] = np.where(
+        team_season['Shots_OT_Valid'] > 0, 
+        team_season['GF'] / team_season['Shots_OT'], 
+        np.nan
+    )
+    team_season['GA_Per_Opp_Shot'] = np.where(
+        team_season['Shots_Against_Valid'] > 0, 
+        team_season['GA'] / team_season['Shots_Against'], 
+        np.nan
+    )
+    team_season['GA_Per_Opp_Shot_OT'] = np.where(
+        team_season['Shots_OT_Against_Valid'] > 0, 
+        team_season['GA'] / team_season['Shots_OT_Against'], 
+        np.nan
+    )
     
-    # Discipline per game
-    team_season['Yellow_PG'] = team_season['Yellow'] / team_season['Matches']
-    team_season['Red_PG'] = team_season['Red'] / team_season['Matches']
-    team_season['Fouls_PG'] = team_season['Fouls'] / team_season['Matches']
+    # Discipline per game using metric-specific exposure
+    team_season['Yellow_PG'] = team_season['Yellow'] / team_season['Yellow_Valid'].replace(0, np.nan)
+    team_season['Red_PG'] = team_season['Red'] / team_season['Red_Valid'].replace(0, np.nan)
+    team_season['Fouls_PG'] = team_season['Fouls'] / team_season['Fouls_Valid'].replace(0, np.nan)
     team_season['Cards_PG'] = team_season['Yellow_PG'] + team_season['Red_PG']
     
     return team_season
 
 
 def compute_consistency_metrics(team_matches: pd.DataFrame, min_matches: int = 10) -> pd.DataFrame:
-    """Compute within-season consistency metrics (CV of match-level stats)."""
+    """Compute within-season consistency metrics (CV of match-level stats).
+    
+    FIXED: Points_Rolling5_Std is now properly LAGGED (shifted before rolling).
+    """
     team_matches = team_matches.sort_values(['Div', 'Team', 'Season', 'Date'])
     
-    # Rolling 5-game points std (lagged)
+    # Rolling 5-game points std (LAGGED - shifted by 1 before rolling)
     team_matches['_group_key'] = team_matches.groupby(['Div', 'Team', 'Season']).ngroup()
-    team_matches['Points_Rolling5_Std'] = team_matches.groupby(['Div', 'Team', 'Season'])['Points'].transform(
-        lambda x: x.rolling(5, min_periods=3).std()
-    )
+    team_matches['Points_Rolling5_Std'] = team_matches.groupby(['Div', 'Team', 'Season'])['Points'].apply(
+        lambda x: x.shift(1).rolling(5, min_periods=3).std()
+    ).reset_index(level=[0,1,2], drop=True)
     team_matches = team_matches.drop(columns=['_group_key'])
     
     # Season-level consistency

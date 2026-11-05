@@ -282,15 +282,15 @@ def analyze_team_profile_changes(team_season: pd.DataFrame, min_seasons: int = 2
 
 
 def analyze_halftime_deficit_recovery(master: pd.DataFrame, team_season: pd.DataFrame, 
-                                       team_matches: pd.DataFrame) -> Dict:
+                                        team_matches: pd.DataFrame) -> Dict:
     """
     Priority C: How much does a halftime deficit really matter?
     
-    Distinguish winning after trailing from drawing after trailing.
-    Condition on halftime goal difference, not only W/D/L.
-    Use valid halftime observations as denominators.
-    Compare home and away teams.
-    Include GENUINELY LAGGED pre-match strength estimate (not full-season PPG).
+    FIXED: Uses GENUINELY LAGGED pre-match strength estimate.
+    - Cumulative PPG before this match (shifted)
+    - Early-season initialization uses PRIOR SEASON average, not current season
+    - Strength terciles defined using EXPANDING HISTORICAL thresholds (not current season)
+    - First-match initialization explicitly handled (NaN, not invented)
     """
     results = {}
     
@@ -318,35 +318,55 @@ def analyze_halftime_deficit_recovery(master: pd.DataFrame, team_season: pd.Data
         )
     ], ignore_index=True)
     
-    # Add GENUINELY LAGGED pre-match strength (cumulative PPG before this match)
-    # Compute from team_matches which has match order
-    tm = team_matches.sort_values(['Div', 'Team', 'Season', 'Date']).copy()
-    tm['Match_Idx'] = tm.groupby(['Div', 'Team', 'Season']).cumcount()
-    tm['Points_Cum'] = tm.groupby(['Div', 'Team', 'Season'])['Points'].apply(
-        lambda x: x.shift(1).expanding(min_periods=1).mean()
-    ).reset_index(level=[0,1,2], drop=True)
+    # Add GENUINELY LAGGED pre-match strength using the FIXED function from new_insights
+    from .new_insights import add_lagged_team_strength
+    tm = add_lagged_team_strength(team_matches)
     
-    # League average for early-season initialization
-    league_avg = tm.groupby(['Div', 'Season'])['Points'].mean().reset_index()
-    league_avg.columns = ['Div', 'Season', 'League_Avg_PPG']
-    tm = tm.merge(league_avg, on=['Div', 'Season'], how='left')
-    
-    # Shrink early estimates toward league average (first 5 matches)
-    tm['PreMatch_PPG'] = np.where(
-        tm['Match_Idx'] < 5,
-        (tm['Points_Cum'] * tm['Match_Idx'] + tm['League_Avg_PPG'] * (5 - tm['Match_Idx'])) / 5,
-        tm['Points_Cum']
-    )
-    
-    # Merge back to ht_data
-    strength_lookup = tm[['Div', 'Team', 'Season', 'Date', 'PreMatch_PPG']].copy()
+    # Merge strength into ht_data
+    strength_lookup = tm[['Div', 'Team', 'Season', 'Date', 'PreMatch_PPG_Shrunk']].copy()
     ht_data = ht_data.merge(strength_lookup, on=['Div', 'Team', 'Season', 'Date'], how='left')
     
-    # Strength categories (terciles within league-season)
-    if 'PreMatch_PPG' in ht_data.columns:
-        ht_data['Strength_Tercile'] = ht_data.groupby(['Div', 'Season'])['PreMatch_PPG'].transform(
-            lambda x: pd.qcut(x, 3, labels=['Weak', 'Average', 'Strong'], duplicates='drop')
-        )
+    # FIXED: Strength categories using EXPANDING HISTORICAL thresholds
+    # For each league-season, use historical (prior seasons) distribution to define terciles
+    # This avoids using future data to define current categories
+    
+    # Build historical league-season PPG distribution
+    season_order = {'1920':0, '2021':1, '2122':2, '2223':3, '2324':4, '2425':5, '2526':6}
+    
+    # Compute historical tercile thresholds for each league-season
+    hist_thresholds = {}
+    for div in ht_data['Div'].unique():
+        div_data = tm[tm['Div'] == div].copy()
+        div_data['Season_Num'] = div_data['Season'].map(season_order)
+        div_data = div_data.sort_values(['Season_Num', 'Date'])
+        
+        for season_code in div_data['Season'].unique():
+            season_num = season_order.get(season_code, np.nan)
+            if pd.isna(season_num):
+                continue
+            
+            # Historical data: all PRIOR seasons in this division
+            hist_data = div_data[div_data['Season_Num'] < season_num]
+            if len(hist_data) > 50 and hist_data['PreMatch_PPG_Shrunk'].notna().sum() > 30:
+                hist_ppg = hist_data['PreMatch_PPG_Shrunk'].dropna()
+                if len(hist_ppg) > 30:
+                    q33, q66 = hist_ppg.quantile([1/3, 2/3])
+                    hist_thresholds[(div, season_code)] = (q33, q66)
+    
+    # Apply historical thresholds
+    def assign_strength_tercile(row):
+        key = (row['Div'], row['Season'])
+        if key in hist_thresholds and pd.notna(row['PreMatch_PPG_Shrunk']):
+            q33, q66 = hist_thresholds[key]
+            if row['PreMatch_PPG_Shrunk'] <= q33:
+                return 'Weak'
+            elif row['PreMatch_PPG_Shrunk'] <= q66:
+                return 'Average'
+            else:
+                return 'Strong'
+        return np.nan
+    
+    ht_data['Strength_Tercile'] = ht_data.apply(assign_strength_tercile, axis=1)
     
     # Categorize HT goal difference
     ht_data['HT_GD_Cat'] = pd.cut(ht_data['HT_GD'], 
@@ -416,6 +436,7 @@ def analyze_halftime_deficit_recovery(master: pd.DataFrame, team_season: pd.Data
         'leading_win_rate': ht_data[ht_data['HT_GD'] > 0]['Won'].mean(),
         'drawing_at_ht': len(ht_data[ht_data['HT_GD'] == 0]),
         'drawing_win_rate': ht_data[ht_data['HT_GD'] == 0]['Won'].mean(),
+        'strength_tercile_coverage': ht_data['Strength_Tercile'].notna().mean(),
     }
     
     return results
