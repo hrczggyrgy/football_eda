@@ -84,10 +84,11 @@ def analyze_home_advantage(master: pd.DataFrame) -> Dict:
             'Goal_Diff': x['FTHG'].mean() - x['FTAG'].mean()
         })
     )
-    results['covid_vs_normal'] = pd.DataFrame({
+    # Combine properly - both have MultiIndex (Div, metric)
+    results['covid_vs_normal'] = pd.concat({
         'covid': ha_covid,
         'normal': ha_other
-    })
+    }, axis=1)
     
     return results
 
@@ -166,27 +167,51 @@ def analyze_efficiency_persistence(team_matches: pd.DataFrame, min_matches: int 
             half_persistence[metric] = {'r': r, 'p': p, 'n': int(valid.sum())}
     results['half_season_persistence'] = half_persistence
     
-    # Season-to-season persistence
+    # Season-to-season persistence (requiring genuinely consecutive seasons in same division)
     season_order = {'1920':0, '2021':1, '2122':2, '2223':3, '2324':4, '2425':5, '2526':6}
     team_season['Season_Num'] = team_season['Season'].map(season_order)
     team_season = team_season.sort_values(['Div', 'Team', 'Season_Num'])
     
-    for metric in ['GPS', 'GPSOT', 'GAOS']:
-        team_season[f'Next_{metric}'] = team_season.groupby(['Div', 'Team'])[metric].shift(-1)
+    # Identify consecutive seasons: same Div, same Team, Season_Num diff == 1
+    team_season['Prev_Season_Num'] = team_season.groupby(['Div', 'Team'])['Season_Num'].shift(1)
+    team_season['Consecutive'] = (team_season['Season_Num'] - team_season['Prev_Season_Num'] == 1)
     
-    team_season['Next_PPG'] = team_season.groupby(['Div', 'Team'])['PPG'].shift(-1)
+    # Track transitions
+    team_season['Prev_Div'] = team_season.groupby(['Team'])['Div'].shift(1)
+    team_season['Div_Changed'] = (team_season['Div'] != team_season['Prev_Div'])
+    
+    # Gap seasons
+    team_season['Season_Gap'] = team_season['Season_Num'] - team_season['Prev_Season_Num']
+    
+    # Report transition summary
+    transition_summary = {
+        'total_pairs': int(team_season['Prev_Season_Num'].notna().sum()),
+        'consecutive_same_div': int(team_season['Consecutive'].sum()),
+        'div_changed': int(team_season['Div_Changed'].sum()),
+        'gap_1_season': int((team_season['Season_Gap'] == 1).sum()),
+        'gap_2plus_seasons': int((team_season['Season_Gap'] > 1).sum()),
+    }
+    results['season_transitions'] = transition_summary
+    
+    # Only use consecutive same-division seasons for persistence
+    consecutive = team_season[team_season['Consecutive']].copy()
+    
+    for metric in ['GPS', 'GPSOT', 'GAOS']:
+        consecutive[f'Next_{metric}'] = consecutive.groupby(['Div', 'Team'])[metric].shift(-1)
+    
+    consecutive['Next_PPG'] = consecutive.groupby(['Div', 'Team'])['PPG'].shift(-1)
     
     season_persistence = {}
     for metric in ['GPS', 'GPSOT', 'GAOS']:
-        v = team_season[metric].notna() & team_season[f'Next_{metric}'].notna()
+        v = consecutive[metric].notna() & consecutive[f'Next_{metric}'].notna()
         if v.sum() > 10:
-            r, p = stats.pearsonr(team_season.loc[v, metric], team_season.loc[v, f'Next_{metric}'])
+            r, p = stats.pearsonr(consecutive.loc[v, metric], consecutive.loc[v, f'Next_{metric}'])
             season_persistence[metric] = {'r': r, 'p': p, 'n': int(v.sum())}
     
     for metric in ['GPS', 'GPSOT', 'GAOS', 'PPG']:
-        v = team_season[metric].notna() & team_season['Next_PPG'].notna()
+        v = consecutive[metric].notna() & consecutive['Next_PPG'].notna()
         if v.sum() > 10:
-            r, p = stats.pearsonr(team_season.loc[v, metric], team_season.loc[v, 'Next_PPG'])
+            r, p = stats.pearsonr(consecutive.loc[v, metric], consecutive.loc[v, 'Next_PPG'])
             season_persistence[f'{metric}_to_NextPPG'] = {'r': r, 'p': p, 'n': int(v.sum())}
     
     results['season_to_season_persistence'] = season_persistence
@@ -481,6 +506,10 @@ def analyze_discipline(team_matches: pd.DataFrame, master: pd.DataFrame, min_mat
     r_fd, p_fd = stats.pearsonr(team_season_disc2['Foul_Diff_PG'], team_season_disc2['PPG'])
     results['foul_differential_correlation'] = {'r': r_fd, 'p': p_fd}
     
+    # Return the team-season discipline dataframes for plotting
+    results['team_season_disc'] = team_season_disc
+    results['team_season_disc2'] = team_season_disc2
+    
     return results
 
 
@@ -532,12 +561,17 @@ def run_robustness_checks(team_matches: pd.DataFrame, master: pd.DataFrame) -> D
     tier_persistence = {}
     for tier_name, tiers in [('Top_5', top_tier), ('Lower_Eng', lower_tier)]:
         tier_data = team_matches[team_matches['Div'].isin(tiers)]
+        if len(tier_data) == 0:
+            continue
         half_eff = tier_data.groupby(['Div', 'Team', 'Season']).apply(half_persistence).reset_index()
         for metric in ['GPS', 'GPSOT', 'GAOS']:
-            v = half_eff[f'{metric}_F'].notna() & half_eff[f'{metric}_S'].notna()
-            if v.sum() > 10:
-                r, p = stats.pearsonr(half_eff.loc[v, f'{metric}_F'], half_eff.loc[v, f'{metric}_S'])
-                tier_persistence[f'{tier_name}_{metric}'] = {'r': r, 'p': p, 'n': int(v.sum())}
+            f_col = f'{metric}_F'
+            s_col = f'{metric}_S'
+            if f_col in half_eff.columns and s_col in half_eff.columns:
+                v = half_eff[f_col].notna() & half_eff[s_col].notna()
+                if v.sum() > 10:
+                    r, p = stats.pearsonr(half_eff.loc[v, f_col], half_eff.loc[v, s_col])
+                    tier_persistence[f'{tier_name}_{metric}'] = {'r': r, 'p': p, 'n': int(v.sum())}
     results['tier_persistence'] = tier_persistence
     
     return results

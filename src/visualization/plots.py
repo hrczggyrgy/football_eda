@@ -11,8 +11,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 from typing import Dict, List, Optional
-import warnings
-warnings.filterwarnings('ignore')
 
 # Style configuration
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -28,7 +26,7 @@ def save_figure(fig, filepath: str, dpi: int = 150):
     plt.close(fig)
 
 
-def plot_home_advantage(ha_results: Dict, output_dir: str = '.') -> List[str]:
+def plot_home_advantage(ha_results: Dict, master: pd.DataFrame, output_dir: str = '.') -> List[str]:
     """Create Figure 1: Home advantage analysis."""
     files = []
     
@@ -38,42 +36,102 @@ def plot_home_advantage(ha_results: Dict, output_dir: str = '.') -> List[str]:
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    # 1a: Home win % by league
+    # 1a: Home win % by league — reference: symmetry null (home win share of decisive matches = 0.5)
     ax = axes[0, 0]
     sns.boxplot(data=ha_ls, x='Div', y='Home_Win_Pct', ax=ax, 
                 order=sorted(ha_ls['Div'].unique()))
-    ax.axhline(y=1/3, color='red', linestyle='--', alpha=0.5, label='Random (1/3)')
-    ax.set_title('Home Win Percentage by League')
+    # Symmetry reference: among decisive matches (non-draws), home win probability = 0.5
+    # This line shows expected home win% if home/away symmetric given observed draw rate
+    # For each league-season, expected = (1 - draw_rate) * 0.5
+    # We plot the pooled average as a reference
+    match_weighted_ref = ha_ls.apply(lambda r: (1 - (r['Draw_Pct'] if 'Draw_Pct' in r else 0.25)) * 0.5, axis=1).mean()
+    ax.axhline(y=match_weighted_ref, color='red', linestyle='--', alpha=0.7, 
+               label=f'Symmetry null (match-wtd) = {match_weighted_ref:.3f}')
+    ax.set_title('Home Win Percentage by League-Season')
     ax.set_ylabel('Home Win %')
     ax.set_xlabel('League')
-    ax.legend()
+    ax.legend(fontsize=9)
     
     # 1b: Goal difference by league
     ax = axes[0, 1]
     sns.boxplot(data=ha_ls, x='Div', y='Goal_Diff', ax=ax,
                 order=sorted(ha_ls['Div'].unique()))
-    ax.axhline(y=0, color='red', linestyle='--', alpha=0.5)
-    ax.set_title('Average Home Goal Advantage by League')
-    ax.set_ylabel('Home Goals - Away Goals')
+    ax.axhline(y=0, color='red', linestyle='--', alpha=0.5, label='No goal advantage')
+    ax.set_title('Average Home Goal Advantage by League-Season')
+    ax.set_ylabel('Home Goals - Away Goals per Match')
     ax.set_xlabel('League')
+    ax.legend(fontsize=9)
     
-    # 1c: Trend over seasons
+    # 1c: Trend over seasons (match-weighted averages)
     ax = axes[1, 0]
-    ax.plot(ha_season['Season'], ha_season['Home_Win_Pct'], 'o-', label='Home Win %', color=COLORS['Home'])
-    ax.plot(ha_season['Season'], ha_season['Away_Win_Pct'], 's-', label='Away Win %', color=COLORS['Away'])
-    ax.plot(ha_season['Season'], ha_season['Draw_Pct'], '^-', label='Draw %', color=COLORS['Draw'])
-    ax.axhline(y=1/3, color='gray', linestyle=':', alpha=0.5)
-    ax.set_title('Home/Away/Draw Trends Across Seasons')
+    # Compute match-weighted seasonal averages
+    season_avg = ha_ls.groupby('Season').apply(
+        lambda g: pd.Series({
+            'Home_Win_Pct': np.average(g['Home_Win_Pct'], weights=g['Matches']),
+            'Away_Win_Pct': np.average(g['Away_Win_Pct'], weights=g['Matches']),
+            'Draw_Pct': np.average(g['Draw_Pct'], weights=g['Matches']),
+        })
+    ).reset_index()
+    ax.plot(season_avg['Season'], season_avg['Home_Win_Pct'], 'o-', label='Home Win %', color=COLORS['Home'])
+    ax.plot(season_avg['Season'], season_avg['Away_Win_Pct'], 's-', label='Away Win %', color=COLORS['Away'])
+    ax.plot(season_avg['Season'], season_avg['Draw_Pct'], '^-', label='Draw %', color=COLORS['Draw'])
+    # Symmetry reference line (match-weighted per season)
+    season_avg['symmetry_ref'] = (1 - season_avg['Draw_Pct']) * 0.5
+    ax.plot(season_avg['Season'], season_avg['symmetry_ref'], '--', color='gray', alpha=0.7, 
+            label='Symmetry null (decisive matches)')
+    ax.set_title('Home/Away/Draw Trends Across Seasons (Match-Weighted)')
     ax.set_ylabel('Percentage')
     ax.set_xlabel('Season')
-    ax.legend()
+    ax.legend(fontsize=9)
     ax.tick_params(axis='x', rotation=45)
     
-    # 1d: Team-level home win % in Premier League
+    # 1d: Team-level home advantage in Premier League (min 10 home matches)
     ax = axes[1, 1]
-    # This would need master data - placeholder for structure
-    ax.text(0.5, 0.5, 'Team-level HA\n(requires master data)', ha='center', va='center', transform=ax.transAxes)
-    ax.set_title('Premier League: Team Home Win % (min 10 matches)')
+    pl_matches = master[(master['Div'] == 'E0')].copy()
+    # Home perspective
+    home_stats = pl_matches.groupby('HomeTeam').agg(
+        Home_Matches=('FTR', 'count'),
+        Home_Wins=('FTR', lambda x: (x == 'H').sum()),
+        Home_Draws=('FTR', lambda x: (x == 'D').sum()),
+        Home_Losses=('FTR', lambda x: (x == 'A').sum()),
+        Home_Goals=('FTHG', 'mean'),
+        Away_Goals=('FTAG', 'mean'),
+    ).reset_index()
+    home_stats = home_stats[home_stats['Home_Matches'] >= 10].copy()
+    home_stats['Home_Win_Pct'] = home_stats['Home_Wins'] / home_stats['Home_Matches']
+    home_stats['Home_Goal_Diff'] = home_stats['Home_Goals'] - home_stats['Away_Goals']
+    
+    # Away perspective for same teams
+    away_stats = pl_matches.groupby('AwayTeam').agg(
+        Away_Matches=('FTR', 'count'),
+        Away_Wins=('FTR', lambda x: (x == 'A').sum()),
+        Away_Draws=('FTR', lambda x: (x == 'D').sum()),
+        Away_Losses=('FTR', lambda x: (x == 'H').sum()),
+    ).reset_index()
+    away_stats = away_stats.rename(columns={'AwayTeam': 'HomeTeam'})
+    away_stats = away_stats[away_stats['Away_Matches'] >= 10]
+    away_stats['Away_Win_Pct'] = away_stats['Away_Wins'] / away_stats['Away_Matches']
+    
+    # Merge
+    team_ha = home_stats.merge(away_stats[['HomeTeam', 'Away_Matches', 'Away_Win_Pct']], on='HomeTeam', how='inner')
+    team_ha = team_ha[team_ha['Away_Matches'] >= 10].copy()
+    team_ha['HA_Win_Diff'] = team_ha['Home_Win_Pct'] - team_ha['Away_Win_Pct']
+    team_ha = team_ha.sort_values('HA_Win_Diff', ascending=True)
+    
+    # Plot horizontal bar chart
+    y_pos = np.arange(len(team_ha))
+    colors = ['#2E86AB' if x > 0 else '#A23B72' for x in team_ha['HA_Win_Diff']]
+    ax.barh(y_pos, team_ha['HA_Win_Diff'], color=colors, alpha=0.7, edgecolor='white', linewidth=0.5)
+    ax.axvline(x=0, color='black', linewidth=0.8)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(team_ha['HomeTeam'], fontsize=7)
+    ax.set_xlabel('Home Win% − Away Win% (percentage points)')
+    ax.set_title('Premier League: Team Home Advantage (Win% Diff, min 10 H/A matches)')
+    # Add reference line for league average
+    league_avg_diff = team_ha['HA_Win_Diff'].mean()
+    ax.axvline(x=league_avg_diff, color='gray', linestyle=':', alpha=0.7, 
+               label=f'League avg = {league_avg_diff:.3f}')
+    ax.legend(fontsize=8, loc='lower right')
     
     plt.tight_layout()
     filepath = f'{output_dir}/fig1_home_advantage.png'
@@ -416,23 +474,45 @@ def plot_consistency_leaders(team_consistency: pd.DataFrame, output_dir: str = '
     return files
 
 
-def plot_discipline(disc_results: Dict, master: pd.DataFrame, output_dir: str = '.') -> List[str]:
+def plot_discipline(disc_results: Dict, team_season_disc: pd.DataFrame, output_dir: str = '.') -> List[str]:
     """Create Figure 10: Disciplinary patterns."""
     files = []
     
-    # Need team_season_disc - reconstruct from results or pass in
-    # This is a simplified version
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    # 10a: Yellow cards vs PPG (placeholder - needs team_season_disc)
+    # 10a: Yellow cards vs PPG
     ax = axes[0, 0]
-    ax.text(0.5, 0.5, 'Yellow Cards vs PPG\n(requires team_season_disc)', ha='center', va='center', transform=ax.transAxes)
-    ax.set_title('Yellow Cards per Game vs PPG')
+    valid = team_season_disc['Yellow_PG'].notna() & team_season_disc['PPG'].notna()
+    if valid.sum() > 10:
+        ax.scatter(team_season_disc.loc[valid, 'Yellow_PG'], team_season_disc.loc[valid, 'PPG'], alpha=0.5, s=20)
+        z = np.polyfit(team_season_disc.loc[valid, 'Yellow_PG'], team_season_disc.loc[valid, 'PPG'], 1)
+        p = np.poly1d(z)
+        x_range = np.linspace(team_season_disc.loc[valid, 'Yellow_PG'].min(), team_season_disc.loc[valid, 'Yellow_PG'].max(), 100)
+        ax.plot(x_range, p(x_range), 'r--', alpha=0.8)
+        r = disc_results['ppg_correlations']['Yellow_PG']['r']
+        ax.set_title(f'Yellow Cards per Game vs PPG (r={r:.3f})')
+    else:
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Yellow Cards per Game vs PPG')
+    ax.set_xlabel('Yellow Cards per Game')
+    ax.set_ylabel('Points per Game')
     
     # 10b: Fouls vs PPG
     ax = axes[0, 1]
-    ax.text(0.5, 0.5, 'Fouls vs PPG\n(requires team_season_disc)', ha='center', va='center', transform=ax.transAxes)
-    ax.set_title('Fouls per Game vs PPG')
+    valid = team_season_disc['Fouls_PG'].notna() & team_season_disc['PPG'].notna()
+    if valid.sum() > 10:
+        ax.scatter(team_season_disc.loc[valid, 'Fouls_PG'], team_season_disc.loc[valid, 'PPG'], alpha=0.5, s=20)
+        z = np.polyfit(team_season_disc.loc[valid, 'Fouls_PG'], team_season_disc.loc[valid, 'PPG'], 1)
+        p = np.poly1d(z)
+        x_range = np.linspace(team_season_disc.loc[valid, 'Fouls_PG'].min(), team_season_disc.loc[valid, 'Fouls_PG'].max(), 100)
+        ax.plot(x_range, p(x_range), 'r--', alpha=0.8)
+        r = disc_results['ppg_correlations']['Fouls_PG']['r']
+        ax.set_title(f'Fouls per Game vs PPG (r={r:.3f})')
+    else:
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Fouls per Game vs PPG')
+    ax.set_xlabel('Fouls per Game')
+    ax.set_ylabel('Points per Game')
     
     # 10c: Discipline by venue
     ax = axes[1, 0]
@@ -459,8 +539,8 @@ def plot_discipline(disc_results: Dict, master: pd.DataFrame, output_dir: str = 
                  disc_results['red_card_impact']['home_red']['draw'],
                  disc_results['red_card_impact']['away_red']['draw']],
         'Away Win': [disc_results['red_card_impact']['baseline']['away_win'],
-                     disc_results['red_card_impact']['home_red']['away_win'],
-                     disc_results['red_card_impact']['away_red']['away_win']]
+                      disc_results['red_card_impact']['home_red']['away_win'],
+                      disc_results['red_card_impact']['away_red']['away_win']]
     })
     red_impact.set_index('Situation').plot(kind='bar', stacked=True, ax=ax, 
                                             color=[COLORS['Home'], COLORS['Draw'], COLORS['Away']])
@@ -477,16 +557,27 @@ def plot_discipline(disc_results: Dict, master: pd.DataFrame, output_dir: str = 
     return files
 
 
-def plot_foul_differential(disc_results: Dict, output_dir: str = '.') -> List[str]:
+def plot_foul_differential(disc_results: Dict, team_season_disc2: pd.DataFrame, output_dir: str = '.') -> List[str]:
     """Create Figure 11: Foul differential vs PPG."""
     files = []
     
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.text(0.5, 0.5, 'Foul Differential vs PPG\n(requires team_season_disc2)', ha='center', va='center', transform=ax.transAxes)
-    ax.set_title('Foul Differential (Committed - Drawn) per Game vs PPG')
-    ax.set_xlabel('Foul Differential per Game (positive = commit more)')
+    valid = team_season_disc2['Foul_Diff_PG'].notna() & team_season_disc2['PPG'].notna()
+    if valid.sum() > 10:
+        ax.scatter(team_season_disc2.loc[valid, 'Foul_Diff_PG'], team_season_disc2.loc[valid, 'PPG'], alpha=0.5, s=20)
+        z = np.polyfit(team_season_disc2.loc[valid, 'Foul_Diff_PG'], team_season_disc2.loc[valid, 'PPG'], 1)
+        p = np.poly1d(z)
+        x_range = np.linspace(team_season_disc2.loc[valid, 'Foul_Diff_PG'].min(), team_season_disc2.loc[valid, 'Foul_Diff_PG'].max(), 100)
+        ax.plot(x_range, p(x_range), 'r--', alpha=0.8)
+        r = disc_results['foul_differential_correlation']['r']
+        ax.set_title(f'Foul Differential (Committed \u2212 Drawn) per Game vs PPG (r={r:.3f})')
+    else:
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Foul Differential vs PPG')
+    ax.set_xlabel('Foul Differential per Game (positive = commit more than draw)')
     ax.set_ylabel('Points per Game')
-    ax.axvline(x=0, color='gray', linestyle=':', alpha=0.5)
+    ax.axvline(x=0, color='gray', linestyle=':', alpha=0.5, label='Neutral (commit = draw)')
+    ax.legend()
     
     plt.tight_layout()
     filepath = f'{output_dir}/fig11_foul_differential.png'
@@ -499,11 +590,12 @@ def plot_foul_differential(disc_results: Dict, output_dir: str = '.') -> List[st
 def create_all_figures(ha_results: Dict, team_season: pd.DataFrame, shot_results: Dict,
                        half_eff: pd.DataFrame, htft_results: Dict, master: pd.DataFrame,
                        consistency: pd.DataFrame, team_consistency: pd.DataFrame,
-                       disc_results: Dict, output_dir: str = '.') -> List[str]:
+                       disc_results: Dict, team_season_disc: pd.DataFrame,
+                       team_season_disc2: pd.DataFrame, output_dir: str = '.') -> List[str]:
     """Create all figures and return list of filepaths."""
     all_files = []
     
-    all_files.extend(plot_home_advantage(ha_results, output_dir))
+    all_files.extend(plot_home_advantage(ha_results, master, output_dir))
     all_files.extend(plot_efficiency_vs_points(team_season, output_dir))
     all_files.extend(plot_efficiency_persistence(half_eff, output_dir))
     all_files.extend(plot_shot_decomposition(team_season, output_dir))
@@ -512,7 +604,7 @@ def create_all_figures(ha_results: Dict, team_season: pd.DataFrame, shot_results
     all_files.extend(plot_half_goals_comebacks(htft_results, master, output_dir))
     all_files.extend(plot_team_profiles(team_season, consistency, output_dir))
     all_files.extend(plot_consistency_leaders(team_consistency, output_dir))
-    all_files.extend(plot_discipline(disc_results, master, output_dir))
-    all_files.extend(plot_foul_differential(disc_results, output_dir))
+    all_files.extend(plot_discipline(disc_results, team_season_disc, output_dir))
+    all_files.extend(plot_foul_differential(disc_results, team_season_disc2, output_dir))
     
     return all_files

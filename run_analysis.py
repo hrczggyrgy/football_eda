@@ -7,8 +7,10 @@ Orchestrates data loading, feature engineering, statistical analysis, and visual
 import pandas as pd
 import numpy as np
 import json
+import argparse
 from pathlib import Path
 import sys
+from datetime import datetime
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
@@ -27,20 +29,66 @@ from analysis.analyze import (
     analyze_shot_decomposition, analyze_ht_ft_dynamics,
     analyze_consistency, analyze_discipline, run_robustness_checks
 )
+from analysis.advanced_insights import (
+    analyze_finishing_persistence, analyze_team_profile_changes,
+    analyze_halftime_deficit_recovery, analyze_volatility_streakiness,
+    analyze_pooled_vs_within_league, analyze_home_advantage_changes
+)
 from visualization.plots import create_all_figures
+from visualization.insight_plots import create_advanced_figures
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Football Analytics Study Pipeline')
+    parser.add_argument('--data-dir', type=str, default='.',
+                        help='Root directory containing season subdirectories with data.zip')
+    parser.add_argument('--output-dir', type=str, default='output',
+                        help='Output directory for results')
+    parser.add_argument('--leagues', type=str, nargs='+', 
+                        default=['E0', 'E1', 'E2', 'E3', 'SP1', 'D1', 'I1', 'F1'],
+                        help='League codes to analyze')
+    parser.add_argument('--seasons', type=str, nargs='+',
+                        default=['1920', '2021', '2122', '2223', '2324', '2425', '2526'],
+                        help='Season codes to analyze (e.g., 1920 for 2019/20)')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    return parser.parse_args()
+
+
+def setup_output_dirs(output_dir: Path) -> Dict[str, Path]:
+    """Create output subdirectories and return their paths."""
+    dirs = {
+        'root': output_dir,
+        'figures': output_dir / 'figures',
+        'tables': output_dir / 'tables',
+        'metadata': output_dir / 'metadata',
+        'data': output_dir / 'data',
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    return dirs
 
 
 def main():
-    # Configuration
-    DATA_DIR = Path('/home/lptop/Documents/coding/football-analytics/exploratory_data_analysis')
-    OUTPUT_DIR = Path('.')
+    args = parse_args()
     
-    TARGET_LEAGUES = ['E0', 'E1', 'E2', 'E3', 'SP1', 'D1', 'I1', 'F1']
-    SEASONS = ['1920', '2021', '2122', '2223', '2324', '2425', '2526']  # Exclude incomplete 2627
+    # Set random seeds for reproducibility
+    np.random.seed(args.seed)
+    
+    # Configuration
+    DATA_DIR = Path(args.data_dir)
+    OUTPUT_DIRS = setup_output_dirs(Path(args.output_dir))
+    
+    TARGET_LEAGUES = args.leagues
+    SEASONS = args.seasons
     
     print("="*60)
     print("FOOTBALL ANALYTICS STUDY - PIPELINE")
     print("="*60)
+    print(f"Data directory: {DATA_DIR}")
+    print(f"Output directory: {OUTPUT_DIRS['root']}")
+    print(f"Leagues: {TARGET_LEAGUES}")
+    print(f"Seasons: {SEASONS}")
+    print(f"Random seed: {args.seed}")
     
     # -----------------------------------------------------------------
     # 1. DATA LOADING
@@ -61,8 +109,7 @@ def main():
     print(f"  Data quality issues: {sum(1 for v in audit.values() if v)} categories checked")
     
     # Save audit
-    with open(OUTPUT_DIR / 'data_audit_summary.json', 'w') as f:
-        # Convert numpy types to native Python
+    with open(OUTPUT_DIRS['metadata'] / 'data_audit_summary.json', 'w') as f:
         def convert(obj):
             if isinstance(obj, (np.integer, np.int64)): return int(obj)
             if isinstance(obj, (np.floating, np.float64)): return float(obj)
@@ -125,6 +172,39 @@ def main():
     robustness_results = run_robustness_checks(team_matches, master)
     print(f"  Robustness checks completed")
     
+    # Extract discipline dataframes for plotting
+    team_season_disc = disc_results['team_season_disc']
+    team_season_disc2 = disc_results['team_season_disc2']
+    
+    # -----------------------------------------------------------------
+    # 4b. ADVANCED STATISTICAL ANALYSES (Priority A-F)
+    # -----------------------------------------------------------------
+    print("\n[4b/6] Running advanced analyses...")
+    
+    # Priority A: Finishing persistence
+    finishing_results = analyze_finishing_persistence(team_matches, min_matches=20)
+    print(f"  Finishing persistence: early vs late season")
+    
+    # Priority B: Team profile changes
+    profile_changes = analyze_team_profile_changes(team_season)
+    print(f"  Team profile changes: consecutive season trajectories")
+    
+    # Priority C: Halftime deficit recovery
+    ht_recovery = analyze_halftime_deficit_recovery(master, team_season)
+    print(f"  HT deficit recovery: conditional on deficit, venue, strength")
+    
+    # Priority D: Volatility and streakiness
+    volatility = analyze_volatility_streakiness(team_matches, team_season, min_matches=20)
+    print(f"  Volatility & streakiness: residual dispersion + runs test")
+    
+    # Priority E: Pooled vs within-league
+    pooled_vs_within = analyze_pooled_vs_within_league(team_season)
+    print(f"  Pooled vs within-league: correlation heterogeneity")
+    
+    # Priority F: Home advantage changes
+    ha_changes = analyze_home_advantage_changes(master, team_season)
+    print(f"  HA changes: league trends, balanced sample, COVID comparison")
+    
     # -----------------------------------------------------------------
     # 5. VISUALIZATION
     # -----------------------------------------------------------------
@@ -133,9 +213,19 @@ def main():
     fig_files = create_all_figures(
         ha_results, team_season, shot_results, half_eff, htft_results, master,
         consistency_results['season_consistency'], consistency_results['team_consistency'],
-        disc_results, output_dir=str(OUTPUT_DIR)
+        disc_results, team_season_disc, team_season_disc2,
+        output_dir=str(OUTPUT_DIRS['figures'])
     )
-    print(f"  Created {len(fig_files)} figures")
+    print(f"  Created {len(fig_files)} core figures")
+    
+    # Advanced figures
+    adv_fig_files = create_advanced_figures(
+        finishing_results, profile_changes, ht_recovery,
+        volatility, pooled_vs_within, ha_changes,
+        output_dir=str(OUTPUT_DIRS['figures'])
+    )
+    print(f"  Created {len(adv_fig_files)} advanced figures")
+    fig_files.extend(adv_fig_files)
     
     # -----------------------------------------------------------------
     # 6. EXPORT RESULTS
@@ -143,14 +233,14 @@ def main():
     print("\n[6/6] Exporting results...")
     
     # Machine-readable tables
-    ha_results['by_league'].reset_index().to_csv(OUTPUT_DIR / 'table_home_advantage_by_league.csv', index=False)
-    team_season.to_csv(OUTPUT_DIR / 'table_team_season_metrics.csv', index=False)
-    htft_results['transitions_norm'].reset_index().to_csv(OUTPUT_DIR / 'table_htft_transitions.csv', index=False)
-    htft_results['transitions_counts'].reset_index().to_csv(OUTPUT_DIR / 'table_htft_transitions_counts.csv', index=False)
-    htft_results['team_comeback_stats'].to_csv(OUTPUT_DIR / 'table_team_comeback_ability.csv', index=False)
-    consistency_results['season_consistency'].to_csv(OUTPUT_DIR / 'table_team_season_consistency.csv', index=False)
-    consistency_results['team_consistency'].to_csv(OUTPUT_DIR / 'table_team_consistency.csv', index=False)
-    team_season[['Div', 'Team', 'Season', 'Cluster']].to_csv(OUTPUT_DIR / 'table_team_season_clusters.csv', index=False)
+    ha_results['by_league'].reset_index().to_csv(OUTPUT_DIRS['tables'] / 'table_home_advantage_by_league.csv', index=False)
+    team_season.to_csv(OUTPUT_DIRS['tables'] / 'table_team_season_metrics.csv', index=False)
+    htft_results['transitions_norm'].reset_index().to_csv(OUTPUT_DIRS['tables'] / 'table_htft_transitions.csv', index=False)
+    htft_results['transitions_counts'].reset_index().to_csv(OUTPUT_DIRS['tables'] / 'table_htft_transitions_counts.csv', index=False)
+    htft_results['team_comeback_stats'].to_csv(OUTPUT_DIRS['tables'] / 'table_team_comeback_ability.csv', index=False)
+    consistency_results['season_consistency'].to_csv(OUTPUT_DIRS['tables'] / 'table_team_season_consistency.csv', index=False)
+    consistency_results['team_consistency'].to_csv(OUTPUT_DIRS['tables'] / 'table_team_consistency.csv', index=False)
+    team_season[['Div', 'Team', 'Season', 'Cluster']].to_csv(OUTPUT_DIRS['tables'] / 'table_team_season_clusters.csv', index=False)
     
     # Discipline by league
     disc_by_league = team_season.groupby('Div').agg(
@@ -159,7 +249,7 @@ def main():
         Fouls_PG=('Fouls_PG', 'mean'),
         PPG=('PPG', 'mean')
     ).reset_index()
-    disc_by_league.to_csv(OUTPUT_DIR / 'table_discipline_by_league.csv', index=False)
+    disc_by_league.to_csv(OUTPUT_DIRS['tables'] / 'table_discipline_by_league.csv', index=False)
     
     # Feature dictionary
     feature_dict = {
@@ -239,21 +329,65 @@ def main():
         }
     }
     
-    with open(OUTPUT_DIR / 'feature_dictionary.json', 'w') as f:
+    with open(OUTPUT_DIRS['metadata'] / 'feature_dictionary.json', 'w') as f:
         json.dump(feature_dict, f, indent=2)
     
     # Save processed data
-    master.to_parquet(OUTPUT_DIR / 'master_matches.parquet', index=False)
-    team_matches.to_parquet(OUTPUT_DIR / 'team_matches.parquet', index=False)
+    master.to_parquet(OUTPUT_DIRS['data'] / 'master_matches.parquet', index=False)
+    team_matches.to_parquet(OUTPUT_DIRS['data'] / 'team_matches.parquet', index=False)
+    
+    # Generate manifest
+    manifest = {
+        'timestamp': datetime.now().isoformat(),
+        'seed': args.seed,
+        'data_dir': str(DATA_DIR),
+        'output_dir': str(OUTPUT_DIRS['root']),
+        'leagues': TARGET_LEAGUES,
+        'seasons': SEASONS,
+        'n_matches': len(master),
+        'n_team_matches': len(team_matches),
+        'n_team_seasons': len(team_season),
+        'figures': [Path(f).name for f in fig_files],
+        'tables': [
+            'table_home_advantage_by_league.csv',
+            'table_team_season_metrics.csv',
+            'table_htft_transitions.csv',
+            'table_htft_transitions_counts.csv',
+            'table_team_comeback_ability.csv',
+            'table_team_season_consistency.csv',
+            'table_team_consistency.csv',
+            'table_team_season_clusters.csv',
+            'table_discipline_by_league.csv',
+            # Advanced analysis tables
+            'tableA_finishing_persistence_data.csv',
+            'tableB_within_div_changes.csv',
+            'tableB_promo_releg_changes.csv',
+            'tableC_trailing_recovery.csv',
+            'tableC_trailing_recovery_strength.csv',
+            'tableD_simulation_benchmark.csv',
+            'tableD_permutation_streakiness.csv',
+            'tableE_correlation_comparison.csv',
+            'tableF_league_season_ha.csv',
+            'tableF_balanced_sample_ha.csv',
+        ],
+        'metadata': ['data_audit_summary.json', 'feature_dictionary.json', 'manifest.json'],
+        'data_files': ['master_matches.parquet', 'team_matches.parquet'],
+        'software_versions': {
+            'pandas': pd.__version__,
+            'numpy': np.__version__,
+        }
+    }
+    with open(OUTPUT_DIRS['metadata'] / 'manifest.json', 'w') as f:
+        json.dump(manifest, f, indent=2)
     
     print("\n" + "="*60)
     print("PIPELINE COMPLETE")
     print("="*60)
-    print(f"Output directory: {OUTPUT_DIR}")
-    print(f"Figures: {len(fig_files)} PNG files")
-    print(f"Tables: 9 CSV files")
-    print(f"Data: 3 Parquet files")
-    print(f"Metadata: 2 JSON files")
+    print(f"Output directory: {OUTPUT_DIRS['root']}")
+    print(f"Figures: {len(fig_files)} PNG files in {OUTPUT_DIRS['figures']}")
+    print(f"Tables: 9 CSV files in {OUTPUT_DIRS['tables']}")
+    print(f"Data: 2 Parquet files in {OUTPUT_DIRS['data']}")
+    print(f"Metadata: 3 JSON files in {OUTPUT_DIRS['metadata']}")
 
 
 if __name__ == '__main__':

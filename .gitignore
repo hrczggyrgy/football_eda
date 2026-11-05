@@ -36,3 +36,7 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+# New output directories
+output/
+output_test/
+reports/

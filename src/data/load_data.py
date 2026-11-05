@@ -87,7 +87,14 @@ def load_season(zip_path: Path, leagues: Optional[List[str]] = None,
     for league in leagues:
         csv_name = f'{league}.csv'
         if csv_name in zipfile.ZipFile(zip_path, 'r').namelist():
-            df = read_csv_from_zip(zip_path, csv_name, usecols=usecols)
+            # Use appropriate columns based on league data availability
+            if league in FULL_DATA_LEAGUES:
+                league_usecols = usecols
+            elif league in PARTIAL_DATA_LEAGUES:
+                league_usecols = [c for c in usecols if c != 'Referee']
+            else:
+                league_usecols = [c for c in usecols if c not in ['Referee', 'HS', 'AS', 'HST', 'AST', 'HF', 'AF', 'HC', 'AC', 'HY', 'AY', 'HR', 'AR']]
+            df = read_csv_from_zip(zip_path, csv_name, usecols=league_usecols)
             df['Season'] = zip_path.parent.name
             dfs.append(df)
     
