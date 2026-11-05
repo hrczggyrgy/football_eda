@@ -1,0 +1,38 @@
+# Data files (large)
+*.parquet
+*.zip
+data/*/data.zip
+
+# Output files
+fig*.png
+table_*.csv
+master_matches.parquet
+team_matches.parquet
+team_matches_features.parquet
+team_season_clusters.csv
+team_comeback_stats.csv
+feature_dictionary.json
+data_audit_summary.json
+ANALYSIS_REPORT.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
