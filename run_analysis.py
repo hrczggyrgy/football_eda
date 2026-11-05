@@ -40,9 +40,11 @@ from analysis.new_insights import (
     analyze_performance_indicators_lead_results, analyze_adaptation_after_promotion,
     build_promotion_relegation_transitions
 )
+from analysis.next_insights import run_next_insights
 from visualization.plots import create_all_figures
 from visualization.insight_plots import create_advanced_figures
 from visualization.new_insight_plots import create_all_new_figures
+from visualization.next_insight_plots import create_all_next_figures
 
 
 def parse_args():
@@ -58,7 +60,8 @@ def parse_args():
                         default=['1920', '2021', '2122', '2223', '2324', '2425', '2526'],
                         help='Season codes to analyze (e.g., 1920 for 2019/20)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
-    parser.add_argument('--skip-new', action='store_true', help='Skip new insight analyses')
+    parser.add_argument('--skip-new', action='store_true', help='Skip new insight analyses (questions 1-6)')
+    parser.add_argument('--skip-next', action='store_true', help='Skip next insight analyses (questions 7-11)')
     return parser.parse_args()
 
 
@@ -136,6 +139,12 @@ def main():
     
     team_season = compute_team_season_metrics(team_matches, min_matches=20)
     print(f"  Team-seasons (20+ matches): {len(team_season)}")
+    
+    # Add corner metrics for next insights
+    team_season['Corners_PG'] = team_season['Corners'] / team_season['Matches']
+    team_season['Corners_Ag_PG'] = team_season['Corners_Against'] / team_season['Matches']
+    team_season['Shots_Per_Corner'] = np.where(team_season['Corners'] > 0, team_season['Shots'] / team_season['Corners'], np.nan)
+    team_season['Goals_Per_Corner'] = np.where(team_season['Corners'] > 0, team_season['GF'] / team_season['Corners'], np.nan)
     
     consistency = compute_consistency_metrics(team_matches, min_matches=10)
     print(f"  Consistency records: {len(consistency)}")
@@ -247,6 +256,17 @@ def main():
         opp_dep = ha_comp = close_match = rest_asym = perf_lead = promo_adapt = {}
     
     # -----------------------------------------------------------------
+    # 4d. NEXT INSIGHT ANALYSES (5 New Research Questions)
+    # -----------------------------------------------------------------
+    if not args.skip_next:
+        print("\n[4d/7] Running next insight analyses...")
+        next_results = run_next_insights(master, team_matches, team_season)
+        print(f"  Next insights completed: {list(next_results.keys())}")
+    else:
+        print("\n[4d/7] Skipping next insight analyses (--skip-next)")
+        next_results = {}
+    
+    # -----------------------------------------------------------------
     # 5. VISUALIZATION
     # -----------------------------------------------------------------
     print("\n[5/7] Creating visualizations...")
@@ -278,6 +298,16 @@ def main():
         )
         print(f"  Created {len(new_fig_files)} new insight figures (1-6)")
         fig_files.extend(new_fig_files)
+    
+    # Next insight figures
+    if not args.skip_next:
+        next_fig_files = create_all_next_figures(
+            next_results,
+            figures_dir=str(OUTPUT_DIRS['figures']),
+            tables_dir=str(OUTPUT_DIRS['tables'])
+        )
+        print(f"  Created {len(next_fig_files)} next insight figures (7-11)")
+        fig_files.extend(next_fig_files)
     
     # -----------------------------------------------------------------
     # 6. EXPORT RESULTS
@@ -359,7 +389,7 @@ def main():
         },
         "temporal_features": {
             "Match_Num": "Match number within team-season",
-            "Rest_Days": "Days since previous match (7 for season opener)"
+            "Rest_Days": "Days since previous match (NaN for season opener, not imputed)"
         },
         "season_aggregate": {
             "PPG": "Points per game",
@@ -441,6 +471,23 @@ def main():
             'table6b_promoted_team_curves.csv',
             'table6c_promotion_transition_table.csv',
             'table6d_relegated_trajectory.csv',
+            # Next insight tables
+            'table1_competitive_balance.csv',
+            'table2_league_style_fingerprints.csv',
+            'table2b_style_distance_matrix.csv',
+            'table2c_style_convergence.csv',
+            'table3a_corner_ppg_correlations.csv',
+            'table3b_corner_persistence.csv',
+            'table3c_corner_incremental_r2.csv',
+            'table4a_shooting_profile_ppg.csv',
+            'table4b_shooting_transition_matrix.csv',
+            'table4c_shooting_profile_stability.csv',
+            'table4d_shooting_half_persistence.csv',
+            'table5a_team_season_clutch.csv',
+            'table5b_clutch_early_late.csv',
+            'table5c_team_clutch.csv',
+            'table5d_clutch_by_venue.csv',
+            'table5e_clutch_by_deficit.csv',
         ],
         'metadata': ['data_audit_summary.json', 'feature_dictionary.json', 'manifest.json'],
         'data_files': ['master_matches.parquet', 'team_matches.parquet'],

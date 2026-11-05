@@ -217,43 +217,63 @@ def plot_shot_decomposition(team_season: pd.DataFrame, output_dir: str = '.') ->
     
     # 4a: Shots per game vs PPG
     ax = axes[0, 0]
-    ax.scatter(team_season['Shots_PG'], team_season['PPG'], alpha=0.5, s=20)
-    z = np.polyfit(team_season['Shots_PG'], team_season['PPG'], 1)
-    p = np.poly1d(z)
-    ax.plot(np.linspace(5, 20, 100), p(np.linspace(5, 20, 100)), 'r--', alpha=0.8)
-    r, _ = stats.pearsonr(team_season['Shots_PG'], team_season['PPG'])
-    ax.set_title(f'Shots per Game vs PPG (r={r:.3f})')
+    valid = team_season['Shots_PG'].notna() & team_season['PPG'].notna()
+    if valid.sum() > 10:
+        ax.scatter(team_season.loc[valid, 'Shots_PG'], team_season.loc[valid, 'PPG'], alpha=0.5, s=20)
+        z = np.polyfit(team_season.loc[valid, 'Shots_PG'], team_season.loc[valid, 'PPG'], 1)
+        p = np.poly1d(z)
+        ax.plot(np.linspace(5, 20, 100), p(np.linspace(5, 20, 100)), 'r--', alpha=0.8)
+        r, _ = stats.pearsonr(team_season.loc[valid, 'Shots_PG'], team_season.loc[valid, 'PPG'])
+        ax.set_title(f'Shots per Game vs PPG (r={r:.3f})')
+    else:
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Shots per Game vs PPG')
     ax.set_xlabel('Shots per Game')
     ax.set_ylabel('Points per Game')
     
     # 4b: Shot Accuracy vs PPG
     ax = axes[0, 1]
-    ax.scatter(team_season['Shot_Accuracy'], team_season['PPG'], alpha=0.5, s=20)
-    z = np.polyfit(team_season['Shot_Accuracy'], team_season['PPG'], 1)
-    p = np.poly1d(z)
-    ax.plot(np.linspace(0.2, 0.5, 100), p(np.linspace(0.2, 0.5, 100)), 'r--', alpha=0.8)
-    r, _ = stats.pearsonr(team_season['Shot_Accuracy'], team_season['PPG'])
-    ax.set_title(f'Shot Accuracy vs PPG (r={r:.3f})')
+    valid = team_season['Shot_Accuracy'].notna() & team_season['PPG'].notna()
+    if valid.sum() > 10:
+        ax.scatter(team_season.loc[valid, 'Shot_Accuracy'], team_season.loc[valid, 'PPG'], alpha=0.5, s=20)
+        z = np.polyfit(team_season.loc[valid, 'Shot_Accuracy'], team_season.loc[valid, 'PPG'], 1)
+        p = np.poly1d(z)
+        ax.plot(np.linspace(0.2, 0.5, 100), p(np.linspace(0.2, 0.5, 100)), 'r--', alpha=0.8)
+        r, _ = stats.pearsonr(team_season.loc[valid, 'Shot_Accuracy'], team_season.loc[valid, 'PPG'])
+        ax.set_title(f'Shot Accuracy vs PPG (r={r:.3f})')
+    else:
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Shot Accuracy vs PPG')
     ax.set_xlabel('Shot Accuracy (SoT/Shots)')
     ax.set_ylabel('Points per Game')
     
     # 4c: Goals per Shot on Target vs PPG
     ax = axes[1, 0]
-    ax.scatter(team_season['Goals_Per_Shot_OT'], team_season['PPG'], alpha=0.5, s=20)
-    z = np.polyfit(team_season['Goals_Per_Shot_OT'], team_season['PPG'], 1)
-    p = np.poly1d(z)
-    ax.plot(np.linspace(0.1, 0.6, 100), p(np.linspace(0.1, 0.6, 100)), 'r--', alpha=0.8)
-    r, _ = stats.pearsonr(team_season['Goals_Per_Shot_OT'], team_season['PPG'])
-    ax.set_title(f'Goals per Shot on Target vs PPG (r={r:.3f})')
+    valid = team_season['Goals_Per_Shot_OT'].notna() & team_season['PPG'].notna()
+    if valid.sum() > 10:
+        ax.scatter(team_season.loc[valid, 'Goals_Per_Shot_OT'], team_season.loc[valid, 'PPG'], alpha=0.5, s=20)
+        z = np.polyfit(team_season.loc[valid, 'Goals_Per_Shot_OT'], team_season.loc[valid, 'PPG'], 1)
+        p = np.poly1d(z)
+        ax.plot(np.linspace(0.1, 0.6, 100), p(np.linspace(0.1, 0.6, 100)), 'r--', alpha=0.8)
+        r, _ = stats.pearsonr(team_season.loc[valid, 'Goals_Per_Shot_OT'], team_season.loc[valid, 'PPG'])
+        ax.set_title(f'Goals per Shot on Target vs PPG (r={r:.3f})')
+    else:
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Goals per Shot on Target vs PPG')
     ax.set_xlabel('Goals per Shot on Target')
     ax.set_ylabel('Points per Game')
     
     # 4d: 3D-like: Shots vs Accuracy colored by Finishing
     ax = axes[1, 1]
-    sc = ax.scatter(team_season['Shots_PG'], team_season['Shot_Accuracy'], 
-                    c=team_season['Goals_Per_Shot_OT'], cmap='RdYlGn', alpha=0.6, s=30)
-    plt.colorbar(sc, ax=ax, label='Goals per Shot on Target')
-    ax.set_title('Shot Volume vs Accuracy (color = Finishing)')
+    valid = team_season['Shots_PG'].notna() & team_season['Shot_Accuracy'].notna() & team_season['Goals_Per_Shot_OT'].notna()
+    if valid.sum() > 10:
+        sc = ax.scatter(team_season.loc[valid, 'Shots_PG'], team_season.loc[valid, 'Shot_Accuracy'], 
+                        c=team_season.loc[valid, 'Goals_Per_Shot_OT'], cmap='RdYlGn', alpha=0.6, s=30)
+        plt.colorbar(sc, ax=ax, label='Goals per Shot on Target')
+        ax.set_title('Shot Volume vs Accuracy (color = Finishing)')
+    else:
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Shot Volume vs Accuracy (color = Finishing)')
     ax.set_xlabel('Shots per Game')
     ax.set_ylabel('Shot Accuracy')
     
