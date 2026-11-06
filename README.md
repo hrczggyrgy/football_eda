@@ -2,6 +2,10 @@
 
 A rigorous exploratory data analysis of 7 seasons (2019/20–2025/26) across 8 European football leagues, examining team performance, match dynamics, and competition structure using football-data.co.uk datasets.
 
+**Engine:** Polars (primary DataFrame engine) + DuckDB (analytical SQL) + Apache Arrow/Parquet (reusable storage), with NumPy/SciPy/scikit-learn for statistics and Matplotlib for plotting. Pandas is retained only as a compatibility layer at the Matplotlib/seaborn plotting boundary.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -14,8 +18,40 @@ python run_analysis.py --data-dir . --output-dir output --seed 42
 # Quick test (1 league × 2 seasons)
 python run_analysis.py --data-dir . --output-dir output_test --leagues E0 --seasons 2122 2223 --seed 42
 
+# Skip insight suites for a faster run
+python run_analysis.py --skip-new --skip-next --skip-fresh
+
 # Run tests
-python -m pytest tests/test_core.py -v
+python -m pytest tests/ -v
+```
+
+## New Architecture
+
+```
+Raw ZIP CSVs
+    │
+    ▼
+Polars ingestion  (UTF-8/Latin-1, Date parsing, missing cols → null)
+    │
+    ▼
+master_matches.parquet  ◄──►  DuckDB (in-memory, Arrow zero-copy)
+team_matches.parquet        analytical SQL: team/league-season
+team_season.parquet         summaries & data-quality checks
+consistency.parquet
+    │
+    ▼
+Polars feature engineering  (efficiency ratios, strictly-lagged
+rolling/expanding windows, opponent strength, team-season metrics,
+clustering)
+    │
+    ▼
+Statistical analysis  (Polars + NumPy/SciPy/scikit-learn)
+    │
+    ▼
+Visualization  (Matplotlib; Polars→pandas only at the plotting boundary)
+    │
+    ▼
+output/  (figures PNG, tables CSV, data Parquet, metadata JSON)
 ```
 
 ## Repository Structure
@@ -29,35 +65,37 @@ python -m pytest tests/test_core.py -v
 ├── README.md                    # This file
 ├── .gitignore
 ├── docs/                        # Documentation
-│   ├── AUDIT.md                 # Complete repository audit
-│   ├── UPGRADE_SUMMARY.md       # Upgrade completion status
-│   ├── ANALYSIS_REPORT.md       # Core analyses report
-│   ├── visual_insights.md       # Visual insights report (core + advanced)
-│   └── new_insights_report.md   # 6 new research questions report
+│   ├── migration_baseline.md    # Pre-migration baseline & measurements
+│   └── polars_duckdb_migration_report.md  # Full migration report
 ├── src/
 │   ├── data/
-│   │   └── load_data.py         # Data loading & preprocessing
+│   │   └── load_data.py         # Polars ingestion & normalization
 │   ├── features/
-│   │   └── engineer.py          # Feature engineering (ratios, rolling, opponent strength)
-│   ├── analysis/
-│   │   ├── analyze.py           # Core statistical analyses (11 figures)
-│   │   ├── advanced_insights.py # Advanced analyses A-F (6 figures)
-│   │   └── new_insights.py      # NEW: 6 research questions (6 figures)
-│   └── visualization/
-│       ├── plots.py             # Core figures (1-11)
-│       ├── insight_plots.py     # Advanced figures (A-F)
-│       └── new_insight_plots.py # NEW: New insight figures (1-6)
+│   │   └── engineer.py          # Polars feature engineering
+│   ├── analysis/                # Polars + SciPy/sklearn statistics
+│   │   ├── analyze.py
+│   │   ├── advanced_insights.py
+│   │   ├── new_insights.py
+│   │   ├── next_insights.py
+│   │   └── fresh_insights.py
+│   └── visualization/           # Matplotlib; Polars→pandas at boundary only
+│       ├── plots.py
+│   │   ├── insight_plots.py
+│   │   ├── new_insight_plots.py
+│   │   ├── next_insight_plots.py
+│   │   └── fresh_insight_plots.py
 ├── data/                        # Raw data (football-data.co.uk zips)
 │   ├── 1920/data.zip
-│   ├── 2021/data.zip
 │   └── ...
 ├── output/                      # Generated artifacts (after running)
-│   ├── figures/                 # 23 publication-quality PNGs (150 DPI)
-│   ├── tables/                  # 37 machine-readable CSVs
-│   ├── data/                    # 2 Parquet files
-│   └── metadata/                # 3 JSON files (audit, feature_dict, manifest)
+│   ├── figures/                 # publication-quality PNGs
+│   ├── tables/                  # machine-readable CSVs
+│   ├── data/                    # Parquet: master_matches, team_matches,
+│   │                              team_season, consistency
+│   └── metadata/                # manifest, audit, feature dictionary
 └── tests/
-    └── test_core.py             # 14 tests covering 7 foundational safeguards
+    ├── test_core.py             # 17 tests / 7 foundational safeguards
+    └── test_performance.py      # correctness + performance regressions
 ```
 
 ## Data Sources
@@ -91,78 +129,84 @@ E. Pooled vs within-league relationships
 F. Home advantage changes across seasons
 
 ### New Research Questions (Figures 1–6)
-1. **Opponent-dependent performance** — Which teams perform relatively better against stronger opponents?
-2. **Components of home advantage** — Is HA associated more with shot generation, shot suppression, or conversion?
-3. **Close-match dependence** — Which teams rely heavily on one-goal results, and does that advantage persist?
-4. **Rest asymmetry** — Is being less rested than the opponent associated with worse performance?
-5. **Performance indicators lead results** — Does sustained improvement in shot dominance precede improved results?
-6. **Adaptation after promotion** — Do promoted teams improve their relative performance during their first season?
+1. Opponent-dependent performance
+2. Components of home advantage
+3. Close-match dependence
+4. Rest asymmetry
+5. Performance indicators lead results
+6. Adaptation after promotion
 
-## Key Findings
+### Next Insights (Figures 7–11)
+7. Competitive balance evolution
+8. League style fingerprints
+9. Corner efficiency & set-piece profiles
+10. Selective vs volume shooting profiles
+11. Clutch performance
 
-| # | Finding | Evidence |
-|---|---------|----------|
-| 1 | **Home advantage is crowd-driven** | 43% home win rate overall; dropped to 37.9% in PL during 2020/21 COVID (−6.4 pp) |
-| 2 | **Shot volume > accuracy > finishing** for predicting points | Multiple regression R²=0.72; β: Shots_PG=0.23, GPSOT=0.17, Accuracy=0.10 |
-| 3 | **Attacking efficiency persists; finishing regresses** | GPS: r=0.35 (half), 0.42 (season); GPSOT: r=0.22 (half), 0.26 (season) |
-| 4 | **55% of goals in second half** | Consistent 54.7–56.2% across leagues; trailing teams see more SH goals but rarely overturn |
-| 5 | **Elite teams are consistently excellent** | Bayern, PSG, Real Madrid, Man City, Inter, Liverpool >2.0 PPG, Points CV ≈ 0.50 |
-| 6 | **HA = shot generation + suppression, not finishing** | +1.8 shots/game, -1.3 opponent shots/game, conversion unchanged |
-| 7 | **Close-match reliance is noise** | Zero persistence (r=0.05); shot dominance 7× more persistent |
-| 8 | **Rest deficit hurts away teams more** | Asymmetric: away -0.05 PPG/day vs home -0.02 PPG/day |
-| 9 | **Shot dominance leads results** | First 10 matches predicts next 10 PPG incrementally over lagged PPG (ΔR²=0.03) |
-| 10 | **Promoted teams adapt steadily** | +0.15 PPG improvement; baseline strength explains 40% variance |
+### Fresh Insights (Figures 12–16)
+12. Draw specialists & match-outcome structure
+13. Match tempo & statistical structure
+14. Game state effects on match statistics
+15. Referee characteristics & potential biases (English leagues)
+16. Expected vs actual points (Pythagorean residuals)
 
-## Methodological Safeguards
+## How Parquet Storage Works
 
-- **No leakage**: All rolling/expanding features use `.shift(1)` before windowing
-- **Consecutive seasons only**: Promotion/relegation requires Season_Num diff=1 AND adjacent division tiers
-- **Valid denominators**: Comeback rates use HT trailing matches only; zero denom → NaN
-- **Symmetry null**: HA binomial test uses p=0.5 among decisive matches (not 1/3)
-- **Simulation benchmark**: 100 sims/team-season; calibrated outcome probabilities
-- **Exchangeability documented**: Match outcomes exchangeable conditional on expected points
-- **Exposure tracked**: Metric-specific valid-match counts; all-missing preserved as NaN
-- **No betting data**: Only 23 non-betting columns in master dataset
+Reusable processed datasets are written to `output/data/` as Parquet:
 
-## Reproducibility
+- `master_matches.parquet` — match-level master
+- `team_matches.parquet` — team-perspective long format
+- `team_season.parquet` — team-season aggregates
+- `consistency.parquet` — within-season consistency metrics
 
-All analysis is contained in `run_analysis.py` with modular `src/` components.
+These are created once and reused across stages, avoiding recomputation. DuckDB can query them directly:
 
-```bash
-# Full pipeline
-python run_analysis.py --data-dir . --output-dir output --seed 42
-
-# With custom leagues/seasons
-python run_analysis.py --data-dir . --output-dir output --leagues E0 SP1 D1 --seasons 2122 2223 2324 --seed 123
-
-# Skip new insights (faster)
-python run_analysis.py --skip-new
+```python
+import duckdb
+con = duckdb.connect()
+con.execute("""
+    SELECT Div, Season, AVG(PPG) AS avg_ppg
+    FROM read_parquet('output/data/team_season.parquet')
+    GROUP BY Div, Season
+""").show()
 ```
 
-**Artifacts generated:**
-- `output/figures/` — 23 PNG files (150 DPI, publication-ready)
-- `output/tables/` — 37 CSV files (machine-readable chart data)
-- `output/data/` — 2 Parquet files (master, team-matches)
-- `output/metadata/` — manifest.json, feature_dictionary.json, data_audit_summary.json
+## How to Query Using DuckDB
 
-**Tests:**
+The pipeline registers Polars DataFrames as DuckDB Arrow views (zero-copy) and runs reusable SQL for team-season and league-season summaries plus data-quality checks. An in-memory connection is used by default.
+
+## How to Reproduce Benchmarks
+
+Stage timings are recorded in `output/metadata/manifest.json` (`stage_times_seconds`, `total_runtime_seconds`).
+
 ```bash
-python -m pytest tests/test_core.py -v
+# Baseline-sized slice (1 league × 2 seasons)
+python run_analysis.py --data-dir . --output-dir bench_slice --leagues E0 --seasons 2122 2223 --seed 42
+
+# Full scale (8 leagues × 7 seasons) — longer run
+python run_analysis.py --data-dir . --output-dir bench_full --seed 42
 ```
-14 tests covering 7 foundational safeguards (home-advantage null, consecutive seasons, comeback denominators, missing/zero handling, zero-denominator ratios, lagged feature leakage, match/team-perspective consistency).
+
+Compare `stage_times_seconds` between runs; the manifest also records software versions (polars, duckdb, numpy).
+
+## Key Methodological Safeguards
+
+- **No leakage**: all rolling/expanding features use `.shift(1)` before windowing
+- **Consecutive seasons only**: promotion/relegation requires Season_Num diff = 1 AND same division
+- **Valid denominators**: zero denominator → null, never 0
+- **Symmetry null**: home-advantage binomial test uses p = 0.5 among decisive matches
+- **Missing vs. zero**: all-missing sums preserved as null
+- **Metric-specific valid-match exposure** for per-game rates
 
 ## Requirements
 
 - Python 3.9+
-- pandas ≥ 2.0
-- numpy ≥ 1.24
-- matplotlib ≥ 3.7
-- seaborn ≥ 0.12
-- scikit-learn ≥ 1.3
-- scipy ≥ 1.10
+- polars ≥ 1.5, duckdb ≥ 0.8, pyarrow ≥ 8
+- numpy ≥ 1.24, matplotlib ≥ 3.7, seaborn ≥ 0.12, scikit-learn ≥ 1.3, scipy ≥ 1.10
+- pandas ≥ 2.0 (plotting boundary only)
 
 Install via: `pip install -r requirements.txt` or `pip install -e .[dev]` for development.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE).

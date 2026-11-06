@@ -1,6 +1,10 @@
 """
 Visualization module.
 Creates publication-quality figures for the football analytics study.
+
+Matplotlib remains the plotting engine. Polars DataFrames are converted to
+pandas only at the Matplotlib/seaborn boundary (the plotting datasets are
+small); the full master dataset is never converted.
 """
 
 import pandas as pd
@@ -10,7 +14,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
+
+import polars as pl
 
 # Style configuration
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -18,6 +24,19 @@ sns.set_context("talk", font_scale=1.1)
 
 COLORS = {'Home': '#2E86AB', 'Away': '#A23B72', 'Draw': '#F18F01'}
 CLUSTER_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+
+
+def _to_pandas(obj):
+    """Convert a Polars DataFrame/Series (or dict/list of them) to pandas at the plotting boundary."""
+    if isinstance(obj, pl.DataFrame):
+        return obj.to_pandas()
+    if isinstance(obj, pl.Series):
+        return obj.to_pandas()
+    if isinstance(obj, dict):
+        return {k: _to_pandas(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_pandas(v) for v in obj)
+    return obj
 
 
 def save_figure(fig, filepath: str, dpi: int = 150):
@@ -294,14 +313,18 @@ def plot_attack_defense_profiles(team_season: pd.DataFrame, shot_results: Dict, 
     # 5a: Attack profile
     if 'attack_profile_ppg' in shot_results:
         pivot = pd.DataFrame(shot_results['attack_profile_ppg'])
+        if 'Attack_Profile' in pivot.columns:
+            pivot = pivot.set_index('Attack_Profile')
         sns.heatmap(pivot, annot=True, fmt='.2f', cmap='RdYlGn', ax=axes[0], center=1.3)
         axes[0].set_title('PPG by Attack Volume and Finishing Quality')
         axes[0].set_xlabel('Finishing Quality')
         axes[0].set_ylabel('Shot Volume')
-    
+
     # 5b: Defense profile
     if 'defense_profile_ppg' in shot_results:
         pivot2 = pd.DataFrame(shot_results['defense_profile_ppg'])
+        if 'Def_Volume' in pivot2.columns:
+            pivot2 = pivot2.set_index('Def_Volume')
         sns.heatmap(pivot2, annot=True, fmt='.2f', cmap='RdYlGn', ax=axes[1], center=1.3)
         axes[1].set_title('PPG by Opp Shot Volume and Defensive Resilience')
         axes[1].set_xlabel('Defensive Resilience (low GA/shot = good)')
@@ -323,14 +346,20 @@ def plot_ht_ft_transitions(htft_results: Dict, output_dir: str = '.') -> List[st
     
     # 6a: Normalized transitions
     transitions = pd.DataFrame(htft_results['transitions_norm'])
-    sns.heatmap(transitions, annot=True, fmt='.3f', cmap='Blues', ax=axes[0], 
+    if 'HTR' in transitions.columns:
+        transitions = transitions.set_index('HTR')
+    sns.heatmap(transitions, annot=True, fmt='.3f', cmap='Blues', ax=axes[0],
                 cbar_kws={'label': 'Probability'})
     axes[0].set_title('Half-Time to Full-Time Result Transitions')
     axes[0].set_xlabel('Full-Time Result')
     axes[0].set_ylabel('Half-Time Result')
-    
+
     # 6b: Counts
     trans_counts = pd.DataFrame(htft_results['transitions_counts'])
+    if 'HTR' in trans_counts.columns:
+        trans_counts = trans_counts.set_index('HTR')
+    # Polars pivot may produce floats; cast to int for the 'd' format.
+    trans_counts = trans_counts.fillna(0).astype(int)
     sns.heatmap(trans_counts, annot=True, fmt='d', cmap='Blues', ax=axes[1],
                 cbar_kws={'label': 'Count'})
     axes[1].set_title('Half-Time to Full-Time Result Transitions (Counts)')
@@ -607,12 +636,28 @@ def plot_foul_differential(disc_results: Dict, team_season_disc2: pd.DataFrame, 
     return files
 
 
-def create_all_figures(ha_results: Dict, team_season: pd.DataFrame, shot_results: Dict,
-                       half_eff: pd.DataFrame, htft_results: Dict, master: pd.DataFrame,
-                       consistency: pd.DataFrame, team_consistency: pd.DataFrame,
-                       disc_results: Dict, team_season_disc: pd.DataFrame,
-                       team_season_disc2: pd.DataFrame, output_dir: str = '.') -> List[str]:
-    """Create all figures and return list of filepaths."""
+def create_all_figures(ha_results: Dict, team_season: Union[pl.DataFrame, pd.DataFrame], shot_results: Dict,
+                       half_eff: Union[pl.DataFrame, pd.DataFrame], htft_results: Dict, master: Union[pl.DataFrame, pd.DataFrame],
+                       consistency: Union[pl.DataFrame, pd.DataFrame], team_consistency: Union[pl.DataFrame, pd.DataFrame],
+                       disc_results: Dict, team_season_disc: Union[pl.DataFrame, pd.DataFrame],
+                       team_season_disc2: Union[pl.DataFrame, pd.DataFrame], output_dir: str = '.') -> List[str]:
+    """Create all figures and return list of filepaths.
+
+    Polars inputs are converted to pandas only here (the plotting boundary);
+    the internal plot functions operate on pandas.
+    """
+    ha_results = _to_pandas(ha_results)
+    team_season = _to_pandas(team_season)
+    shot_results = _to_pandas(shot_results)
+    half_eff = _to_pandas(half_eff)
+    htft_results = _to_pandas(htft_results)
+    master = _to_pandas(master)
+    consistency = _to_pandas(consistency)
+    team_consistency = _to_pandas(team_consistency)
+    disc_results = _to_pandas(disc_results)
+    team_season_disc = _to_pandas(team_season_disc)
+    team_season_disc2 = _to_pandas(team_season_disc2)
+
     all_files = []
     
     all_files.extend(plot_home_advantage(ha_results, master, output_dir))

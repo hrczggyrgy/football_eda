@@ -10,10 +10,24 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
+
+import polars as pl
 
 COLORS = {'Home': '#2E86AB', 'Away': '#A23B72', 'Draw': '#F18F01'}
 PALETTE = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+
+
+def _to_pandas(obj):
+    if isinstance(obj, pl.DataFrame):
+        return obj.to_pandas()
+    if isinstance(obj, pl.Series):
+        return obj.to_pandas()
+    if isinstance(obj, dict):
+        return {k: _to_pandas(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_pandas(v) for v in obj)
+    return obj
 
 
 def save_figure(fig, filepath: str, dpi: int = 150):
@@ -103,7 +117,10 @@ def plot_finishing_persistence(results: Dict, output_dir: str = '.') -> List[str
     if metric in trajectories:
         traj_data = pd.DataFrame(trajectories[metric])
         q_order = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
-        traj_data = traj_data.set_index('Quantile').loc[q_order].reset_index()
+        traj_data = traj_data.set_index('Quantile')
+        traj_data = traj_data.reindex(
+            [q for q in q_order if q in traj_data.index]
+        ).reset_index()
         x_pos = np.arange(len(traj_data))
         ax.errorbar(x_pos, traj_data['mean'], yerr=traj_data['std'], 
                     fmt='o-', capsize=4, capthick=1, color=PALETTE[0], label='Late GPS')
@@ -121,7 +138,10 @@ def plot_finishing_persistence(results: Dict, output_dir: str = '.') -> List[str
     if metric in trajectories:
         traj_data = pd.DataFrame(trajectories[metric])
         q_order = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
-        traj_data = traj_data.set_index('Quantile').loc[q_order].reset_index()
+        traj_data = traj_data.set_index('Quantile')
+        traj_data = traj_data.reindex(
+            [q for q in q_order if q in traj_data.index]
+        ).reset_index()
         x_pos = np.arange(len(traj_data))
         ax.errorbar(x_pos, traj_data['mean'], yerr=traj_data['std'], 
                     fmt='o-', capsize=4, capthick=1, color=PALETTE[1], label='Late GPSOT')
@@ -752,7 +772,17 @@ def plot_home_advantage_changes(results: Dict, output_dir: str = '.') -> List[st
 def create_advanced_figures(results_A: Dict, results_B: Dict, results_C: Dict,
                            results_D: Dict, results_E: Dict, results_F: Dict,
                            output_dir: str = '.') -> List[str]:
-    """Create all advanced insight figures."""
+    """Create all advanced insight figures.
+
+    Polars inputs are converted to pandas at the plotting boundary.
+    """
+    results_A = _to_pandas(results_A)
+    results_B = _to_pandas(results_B)
+    results_C = _to_pandas(results_C)
+    results_D = _to_pandas(results_D)
+    results_E = _to_pandas(results_E)
+    results_F = _to_pandas(results_F)
+
     all_files = []
     
     all_files.extend(plot_finishing_persistence(results_A, output_dir))

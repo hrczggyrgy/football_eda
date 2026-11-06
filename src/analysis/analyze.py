@@ -1,604 +1,729 @@
 """
 Statistical analysis module.
-Contains functions for home advantage, efficiency persistence, shot decomposition,
-half-time/full-time dynamics, consistency analysis, and disciplinary patterns.
+Core statistics: home advantage, efficiency persistence, shot decomposition,
+half-time/full-time dynamics, consistency, and disciplinary patterns.
+
+Migrated to Polars: Polars is the primary analytical data structure. NumPy
+and SciPy/scikit-learn are used only where they provide the appropriate
+statistical functionality (pearsonr, linregress, binomtest, LinearRegression).
+No pandas.
 """
 
-import pandas as pd
+from __future__ import annotations
+
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
+import polars as pl
 from scipy import stats
 from scipy.stats import binomtest
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
-from typing import Dict, List, Tuple, Optional
+
+TEAM_SEASON_GROUP = ['Div', 'Team', 'Season']
+SEASON_ORDER = {
+    '1920': 0, '2021': 1, '2122': 2, '2223': 3,
+    '2324': 4, '2425': 5, '2526': 6, '2627': 7,
+}
 
 
-def analyze_home_advantage(master: pd.DataFrame) -> Dict:
+def _pearsonr(x: np.ndarray, y: np.ndarray) -> Tuple[float, float, int]:
+    """Pearson correlation returning (r, p, n) on valid pairs."""
+    m = (~np.isnan(x)) & (~np.isnan(y))
+    n = int(m.sum())
+    if n < 2:
+        return float('nan'), float('nan'), n
+    r, p = stats.pearsonr(x[m], y[m])
+    return float(r), float(p), n
+
+
+def _df_to_np(df: pl.DataFrame, col: str) -> np.ndarray:
+    return df.select(pl.col(col).cast(pl.Float64)).to_series().to_numpy()
+
+
+def analyze_home_advantage(master: pl.DataFrame) -> Dict:
     """Analyze home advantage by league, season, and team."""
-    results = {}
-    
+    results: Dict = {}
+
     # By league and season
-    ha_ls = master.groupby(['Div', 'Season']).apply(
-        lambda x: pd.Series({
-            'Home_Win_Pct': (x['FTR'] == 'H').mean(),
-            'Draw_Pct': (x['FTR'] == 'D').mean(),
-            'Away_Win_Pct': (x['FTR'] == 'A').mean(),
-            'Home_Goals': x['FTHG'].mean(),
-            'Away_Goals': x['FTAG'].mean(),
-            'Goal_Diff': x['FTHG'].mean() - x['FTAG'].mean(),
-            'Matches': len(x)
-        })
-    ).reset_index()
+    ha_ls = master.group_by(['Div', 'Season']).agg([
+        ((pl.col('FTR') == 'H').mean()).alias('Home_Win_Pct'),
+        ((pl.col('FTR') == 'D').mean()).alias('Draw_Pct'),
+        ((pl.col('FTR') == 'A').mean()).alias('Away_Win_Pct'),
+        pl.col('FTHG').mean().alias('Home_Goals'),
+        pl.col('FTAG').mean().alias('Away_Goals'),
+        (pl.col('FTHG').mean() - pl.col('FTAG').mean()).alias('Goal_Diff'),
+        pl.len().alias('Matches'),
+    ]).sort(['Div', 'Season'])
     results['by_league_season'] = ha_ls
-    
-    # By league (averaged)
-    ha_league = ha_ls.groupby('Div').agg({
-        'Home_Win_Pct': 'mean',
-        'Draw_Pct': 'mean',
-        'Away_Win_Pct': 'mean',
-        'Goal_Diff': 'mean'
-    }).round(3)
+
+    # By league (averaged across league-seasons)
+    ha_league = ha_ls.group_by('Div').agg([
+        pl.col('Home_Win_Pct').mean().round(3),
+        pl.col('Draw_Pct').mean().round(3),
+        pl.col('Away_Win_Pct').mean().round(3),
+        pl.col('Goal_Diff').mean().round(3),
+    ]).sort('Div')
     results['by_league'] = ha_league
-    
-    # By season (averaged)
-    ha_season = ha_ls.groupby('Season').agg({
-        'Home_Win_Pct': 'mean',
-        'Draw_Pct': 'mean',
-        'Away_Win_Pct': 'mean',
-        'Goal_Diff': 'mean'
-    }).round(3)
+
+    # By season (averaged across leagues)
+    ha_season = ha_ls.group_by('Season').agg([
+        pl.col('Home_Win_Pct').mean().round(3),
+        pl.col('Draw_Pct').mean().round(3),
+        pl.col('Away_Win_Pct').mean().round(3),
+        pl.col('Goal_Diff').mean().round(3),
+    ]).sort('Season')
     results['by_season'] = ha_season
-    
-    # Statistical significance per league
-    # Correct null: among decisive matches, home win probability = 0.5 (symmetric HA null)
-    sig_results = {}
-    for league in master['Div'].unique():
-        lg_data = master[master['Div'] == league]
-        home_wins = (lg_data['FTR'] == 'H').sum()
-        away_wins = (lg_data['FTR'] == 'A').sum()
-        draws = (lg_data['FTR'] == 'D').sum()
-        total = len(lg_data)
+
+    # Statistical significance per league (symmetric null: p=0.5 decisive)
+    sig_results: Dict = {}
+    for league in master.select(pl.col('Div').unique()).to_series().to_list():
+        lg_data = master.filter(pl.col('Div') == league)
+        home_wins = int((lg_data.select(pl.col('FTR') == 'H').to_series().sum()))
+        away_wins = int((lg_data.select(pl.col('FTR') == 'A').to_series().sum()))
+        draws = int((lg_data.select(pl.col('FTR') == 'D').to_series().sum()))
+        total = lg_data.height
         decisive = total - draws
-        # Symmetric null: p = 0.5 for home win among decisive matches
-        result = binomtest(home_wins, n=decisive, p=0.5, alternative='greater')
+        res = binomtest(home_wins, n=decisive, p=0.5, alternative='greater')
         sig_results[league] = {
             'home_win_pct': home_wins / total,
             'away_win_pct': away_wins / total,
-            'home_win_pct_decisive': home_wins / decisive if decisive > 0 else np.nan,
-            'away_win_pct_decisive': away_wins / decisive if decisive > 0 else np.nan,
+            'home_win_pct_decisive': (home_wins / decisive) if decisive > 0 else float('nan'),
+            'away_win_pct_decisive': (away_wins / decisive) if decisive > 0 else float('nan'),
             'draw_pct': draws / total,
-            'p_value': result.pvalue,
-            'significant': result.pvalue < 0.05,
-            'n_decisive': int(decisive)
+            'p_value': float(res.pvalue),
+            'significant': bool(res.pvalue < 0.05),
+            'n_decisive': int(decisive),
         }
     results['significance'] = sig_results
-    
+
     # COVID season comparison
     covid = '2021'
-    ha_covid = master[master['Season'] == covid].groupby('Div').apply(
-        lambda x: pd.Series({
-            'Home_Win_Pct': (x['FTR'] == 'H').mean(),
-            'Away_Win_Pct': (x['FTR'] == 'A').mean(),
-            'Goal_Diff': x['FTHG'].mean() - x['FTAG'].mean()
-        })
-    )
-    ha_other = master[master['Season'] != covid].groupby('Div').apply(
-        lambda x: pd.Series({
-            'Home_Win_Pct': (x['FTR'] == 'H').mean(),
-            'Away_Win_Pct': (x['FTR'] == 'A').mean(),
-            'Goal_Diff': x['FTHG'].mean() - x['FTAG'].mean()
-        })
-    )
-    # Combine properly - both have MultiIndex (Div, metric)
-    results['covid_vs_normal'] = pd.concat({
-        'covid': ha_covid,
-        'normal': ha_other
-    }, axis=1)
-    
+    ha_covid = master.filter(pl.col('Season') == covid).group_by('Div').agg([
+        ((pl.col('FTR') == 'H').mean()).alias('Home_Win_Pct'),
+        ((pl.col('FTR') == 'A').mean()).alias('Away_Win_Pct'),
+        (pl.col('FTHG').mean() - pl.col('FTAG').mean()).alias('Goal_Diff'),
+    ]).sort('Div')
+    ha_other = master.filter(pl.col('Season') != covid).group_by('Div').agg([
+        ((pl.col('FTR') == 'H').mean()).alias('Home_Win_Pct'),
+        ((pl.col('FTR') == 'A').mean()).alias('Away_Win_Pct'),
+        (pl.col('FTHG').mean() - pl.col('FTAG').mean()).alias('Goal_Diff'),
+    ]).sort('Div')
+    # Rename columns to avoid clash on concat
+    ha_covid = ha_covid.rename({c: f'{c}_covid' for c in ha_covid.columns if c != 'Div'})
+    ha_other = ha_other.rename({c: f'{c}_normal' for c in ha_other.columns if c != 'Div'})
+    results['covid_vs_normal'] = ha_covid.join(ha_other, on='Div', how='full')
+
     return results
 
 
-def analyze_efficiency_persistence(team_matches: pd.DataFrame, min_matches: int = 20) -> Dict:
+def analyze_efficiency_persistence(team_matches: pl.DataFrame,
+                                   min_matches: int = 20) -> Dict:
     """Analyze persistence of efficiency metrics across half-seasons and seasons."""
-    results = {}
-    
+    results: Dict = {}
+
     # Team-season aggregates
-    team_season = team_matches.groupby(['Div', 'Team', 'Season']).agg(
-        Matches=('GF', 'count'),
-        GF=('GF', 'sum'), GA=('GA', 'sum'),
-        Shots=('Shots', 'sum'), Shots_OT=('Shots_OT', 'sum'),
-        Shots_Against=('Shots_Against', 'sum'), Shots_OT_Against=('Shots_OT_Against', 'sum'),
-        Points=('Points', 'sum'),
-    ).reset_index()
-    team_season = team_season[team_season['Matches'] >= min_matches].copy()
-    team_season['GPS'] = team_season['GF'] / team_season['Shots']
-    team_season['GPSOT'] = team_season['GF'] / team_season['Shots_OT']
-    team_season['GAOS'] = team_season['GA'] / team_season['Shots_Against']
-    team_season['PPG'] = team_season['Points'] / team_season['Matches']
+    team_season = team_matches.group_by(TEAM_SEASON_GROUP).agg([
+        pl.len().alias('Matches'),
+        pl.col('GF').sum().alias('GF'),
+        pl.col('GA').sum().alias('GA'),
+        pl.col('Shots').sum().alias('Shots'),
+        pl.col('Shots_OT').sum().alias('Shots_OT'),
+        pl.col('Shots_Against').sum().alias('Shots_Against'),
+        pl.col('Shots_OT_Against').sum().alias('Shots_OT_Against'),
+        pl.col('Points').sum().alias('Points'),
+    ])
+    team_season = team_season.filter(pl.col('Matches') >= min_matches)
+
+    def _safe_ratio(num: str, den: str, name: str) -> pl.Expr:
+        return pl.when(pl.col(den) > 0).then(
+            pl.col(num) / pl.col(den)).otherwise(None).alias(name)
+
+    team_season = team_season.with_columns([
+        _safe_ratio('GF', 'Shots', 'GPS'),
+        _safe_ratio('GF', 'Shots_OT', 'GPSOT'),
+        _safe_ratio('GA', 'Shots_Against', 'GAOS'),
+        (pl.col('Points') / pl.col('Matches')).alias('PPG'),
+    ])
     results['team_season'] = team_season
-    
+
     # Correlation with PPG
-    corr_results = {}
+    corr_results: Dict = {}
     for metric in ['GPS', 'GPSOT', 'GAOS', 'Shot_Accuracy']:
         if metric not in team_season.columns:
-            if metric == 'Shot_Accuracy':
-                team_season['Shot_Accuracy'] = team_season['Shots_OT'] / team_season['Shots']
-        valid = team_season[metric].notna()
-        if valid.sum() > 10:
-            r, p = stats.pearsonr(team_season.loc[valid, metric], team_season.loc[valid, 'PPG'])
-            corr_results[metric] = {'r': r, 'p': p, 'n': int(valid.sum())}
+            if metric == 'Shot_Accuracy' and {'Shots_OT', 'Shots'} <= set(team_season.columns):
+                team_season = team_season.with_columns(
+                    _safe_ratio('Shots_OT', 'Shots', 'Shot_Accuracy'))
+        valid = team_season.select(pl.col(metric).is_not_null()).to_series()
+        if int(valid.sum()) > 10:
+            x = _df_to_np(team_season.filter(valid), metric)
+            y = _df_to_np(team_season.filter(valid), 'PPG')
+            r, p, n = _pearsonr(x, y)
+            corr_results[metric] = {'r': r, 'p': p, 'n': n}
     results['ppg_correlations'] = corr_results
-    
-    # Half-season persistence
-    # Half-season persistence (vectorized with cumulative sums).
-    # Equivalent to splitting each team-season at mid (by Date) and summing each half,
-    # but computed without a Python groupby.apply loop.
-    tm_sub = team_matches[
-        team_matches.groupby(['Div', 'Team', 'Season']).transform('size') >= min_matches
-    ].copy()
-    tm_sub = tm_sub.sort_values(['Div', 'Team', 'Season', 'Date'])
-    grp = ['Div', 'Team', 'Season']
-    g = tm_sub.groupby(grp)
-    cc = g.cumcount().to_numpy()
-    n = g.transform('size').to_numpy()
+
+    # Half-season persistence (vectorized cumulative sums, no groupby.apply loop).
+    tm_sub = team_matches.with_columns(
+        pl.len().over(TEAM_SEASON_GROUP).alias('season_size')
+    ).filter(pl.col('season_size') >= min_matches)
+    tm_sub = tm_sub.sort(['Div', 'Team', 'Season', 'Date'])
+    grp = TEAM_SEASON_GROUP
+    cc = tm_sub.select(pl.cum_count('Date').over(grp)).to_series().to_numpy()
+    n = tm_sub.select(pl.len().over(grp)).to_series().to_numpy()
     mid = n // 2
     first_mask = cc < mid
-    first = tm_sub[first_mask]
-    second = tm_sub[~first_mask]
+    first = tm_sub.filter(pl.Series(first_mask))
+    second = tm_sub.filter(pl.Series(~first_mask))
+
     sum_cols = ['Shots', 'Shots_OT', 'GF', 'GA', 'Shots_Against', 'Shots_OT_Against']
-    first_sums = first.groupby(grp)[sum_cols].sum().add_suffix('_First')
-    second_sums = second.groupby(grp)[sum_cols].sum().add_suffix('_Second')
-    first_matches = first.groupby(grp).size().rename('Matches_First')
-    second_matches = second.groupby(grp).size().rename('Matches_Second')
-    half_eff = first_sums.join(second_sums).join(first_matches).join(second_matches).reset_index()
-    
-    def _ratio0(num, den):
-        return np.where(den > 0, num / den, np.nan)
-    
-    half_eff['GPS_First'] = _ratio0(half_eff['GF_First'], half_eff['Shots_First'])
-    half_eff['GPSOT_First'] = _ratio0(half_eff['GF_First'], half_eff['Shots_OT_First'])
-    half_eff['GAOS_First'] = _ratio0(half_eff['GA_First'], half_eff['Shots_Against_First'])
-    half_eff['GAOSOT_First'] = _ratio0(half_eff['GA_First'], half_eff['Shots_OT_Against_First'])
-    half_eff['GPS_Second'] = _ratio0(half_eff['GF_Second'], half_eff['Shots_Second'])
-    half_eff['GPSOT_Second'] = _ratio0(half_eff['GF_Second'], half_eff['Shots_OT_Second'])
-    half_eff['GAOS_Second'] = _ratio0(half_eff['GA_Second'], half_eff['Shots_Against_Second'])
-    half_eff['GAOSOT_Second'] = _ratio0(half_eff['GA_Second'], half_eff['Shots_OT_Against_Second'])
-    
+    first_sums = first.group_by(grp).agg([pl.col(c).sum().alias(f'{c}_First') for c in sum_cols])
+    second_sums = second.group_by(grp).agg([pl.col(c).sum().alias(f'{c}_Second') for c in sum_cols])
+    first_matches = first.group_by(grp).agg(pl.len().alias('Matches_First'))
+    second_matches = second.group_by(grp).agg(pl.len().alias('Matches_Second'))
+
+    half_eff = first_sums.join(second_sums, on=grp, how='full', coalesce=True).join(
+        first_matches, on=grp, how='full', coalesce=True).join(second_matches, on=grp, how='full', coalesce=True)
+
+    def _ratio0_expr(num: str, den: str, name: str) -> pl.Expr:
+        return pl.when(pl.col(den) > 0).then(pl.col(num) / pl.col(den)).otherwise(None).alias(name)
+
+    ratio_cols = [
+        ('GF_First', 'Shots_First', 'GPS_First'),
+        ('GF_First', 'Shots_OT_First', 'GPSOT_First'),
+        ('GA_First', 'Shots_Against_First', 'GAOS_First'),
+        ('GA_First', 'Shots_OT_Against_First', 'GAOSOT_First'),
+        ('GF_Second', 'Shots_Second', 'GPS_Second'),
+        ('GF_Second', 'Shots_OT_Second', 'GPSOT_Second'),
+        ('GA_Second', 'Shots_Against_Second', 'GAOS_Second'),
+        ('GA_Second', 'Shots_OT_Against_Second', 'GAOSOT_Second'),
+    ]
+    half_eff = half_eff.with_columns([_ratio0_expr(n_, d, name) for n_, d, name in ratio_cols])
     results['half_season'] = half_eff
 
-    
-    half_persistence = {}
+    half_persistence: Dict = {}
     for metric in ['GPS', 'GPSOT', 'GAOS', 'GAOSOT']:
-        first_col = f'{metric}_First'
-        second_col = f'{metric}_Second'
-        valid = half_eff[first_col].notna() & half_eff[second_col].notna()
-        if valid.sum() > 10:
-            r, p = stats.pearsonr(half_eff.loc[valid, first_col], half_eff.loc[valid, second_col])
-            half_persistence[metric] = {'r': r, 'p': p, 'n': int(valid.sum())}
+        f_col = f'{metric}_First'
+        s_col = f'{metric}_Second'
+        valid = half_eff.select(pl.col(f_col).is_not_null() & pl.col(s_col).is_not_null()).to_series()
+        if int(valid.sum()) > 10:
+            x = _df_to_np(half_eff.filter(valid), f_col)
+            y = _df_to_np(half_eff.filter(valid), s_col)
+            r, p, n = _pearsonr(x, y)
+            half_persistence[metric] = {'r': r, 'p': p, 'n': n}
     results['half_season_persistence'] = half_persistence
-    
-    # Season-to-season persistence (requiring genuinely consecutive seasons in same division)
-    # CRITICAL FIX: Create lag/lead pairs on COMPLETE chronological table FIRST,
-    # then explicitly require Season_Num diff == 1 for each pair.
-    # This avoids losing the first valid adjacent-season pair or bridging gaps after filtering.
-    
-    season_order = {'1920':0, '2021':1, '2122':2, '2223':3, '2324':4, '2425':5, '2526':6}
-    team_season = team_season.copy()
-    team_season['Season_Num'] = team_season['Season'].map(season_order)
-    team_season = team_season.sort_values(['Div', 'Team', 'Season_Num'])
-    
-    # Create lead (next season) metrics on FULL table before any filtering
+
+    # Season-to-season persistence (consecutive seasons, same division)
+    season_order = {'1920': 0, '2021': 1, '2122': 2, '2223': 3,
+                    '2324': 4, '2425': 5, '2526': 6}
+    mapping = pl.DataFrame({'Season': list(season_order.keys()),
+                            'Season_Num': list(season_order.values())})
+    team_season = team_season.join(mapping, on='Season', how='left').sort(
+        ['Div', 'Team', 'Season_Num'])
+
     for metric in ['GPS', 'GPSOT', 'GAOS', 'PPG']:
-        team_season[f'Next_{metric}'] = team_season.groupby(['Div', 'Team'])[metric].shift(-1)
-    team_season['Next_Season_Num'] = team_season.groupby(['Div', 'Team'])['Season_Num'].shift(-1)
-    team_season['Next_Div'] = team_season.groupby(['Div', 'Team'])['Div'].shift(-1)
-    
-    # NOW filter: require same division AND exactly one season gap
+        team_season = team_season.with_columns(
+            pl.col(metric).shift(-1).over(['Div', 'Team']).alias(f'Next_{metric}')
+        )
+    team_season = team_season.with_columns([
+        pl.col('Season_Num').shift(-1).over(['Div', 'Team']).alias('Next_Season_Num'),
+        pl.col('Div').shift(-1).over(['Div', 'Team']).alias('Next_Div'),
+    ])
+
     valid_pairs = (
-        team_season['Next_Season_Num'].notna() & 
-        (team_season['Next_Season_Num'] - team_season['Season_Num'] == 1) &
-        (team_season['Next_Div'] == team_season['Div'])
+        pl.col('Next_Season_Num').is_not_null() &
+        (pl.col('Next_Season_Num') - pl.col('Season_Num') == 1) &
+        (pl.col('Next_Div') == pl.col('Div'))
     )
-    
-    consecutive = team_season[valid_pairs].copy()
-    
-    # Track transitions on full table for reporting
-    team_season['Prev_Season_Num'] = team_season.groupby(['Div', 'Team'])['Season_Num'].shift(1)
-    team_season['Prev_Div'] = team_season.groupby(['Team'])['Div'].shift(1)
-    team_season['Div_Changed'] = (team_season['Div'] != team_season['Prev_Div'])
-    team_season['Season_Gap'] = team_season['Season_Num'] - team_season['Prev_Season_Num']
-    
-    # Report transition summary
+    consecutive = team_season.filter(valid_pairs)
+
+    # Transition summary on full table
+    team_season = team_season.with_columns([
+        pl.col('Season_Num').shift(1).over(['Div', 'Team']).alias('Prev_Season_Num'),
+        pl.col('Div').shift(1).over(['Div', 'Team']).alias('Prev_Div'),
+    ])
     transition_summary = {
-        'total_pairs': int(team_season['Prev_Season_Num'].notna().sum()),
-        'consecutive_same_div': int(valid_pairs.sum()),
-        'div_changed': int(team_season['Div_Changed'].sum()),
-        'gap_1_season': int((team_season['Season_Gap'] == 1).sum()),
-        'gap_2plus_seasons': int((team_season['Season_Gap'] > 1).sum()),
+        'total_pairs': int(team_season.select(pl.col('Prev_Season_Num').is_not_null().sum()).to_series()[0]),
+        'consecutive_same_div': int(consecutive.height),
+        'div_changed': int(team_season.select((pl.col('Div') != pl.col('Prev_Div')).sum()).to_series()[0]),
+        'gap_1_season': int(team_season.select((pl.col('Season_Num') - pl.col('Prev_Season_Num') == 1).sum()).to_series()[0]),
+        'gap_2plus_seasons': int(team_season.select((pl.col('Season_Num') - pl.col('Prev_Season_Num') > 1).sum()).to_series()[0]),
     }
     results['season_transitions'] = transition_summary
-    
-    season_persistence = {}
+
+    season_persistence: Dict = {}
     for metric in ['GPS', 'GPSOT', 'GAOS']:
-        v = consecutive[metric].notna() & consecutive[f'Next_{metric}'].notna()
-        if v.sum() > 10:
-            r, p = stats.pearsonr(consecutive.loc[v, metric], consecutive.loc[v, f'Next_{metric}'])
-            season_persistence[metric] = {'r': r, 'p': p, 'n': int(v.sum())}
-    
+        v = consecutive.select(pl.col(metric).is_not_null() & pl.col(f'Next_{metric}').is_not_null()).to_series()
+        if int(v.sum()) > 10:
+            x = _df_to_np(consecutive.filter(v), metric)
+            y = _df_to_np(consecutive.filter(v), f'Next_{metric}')
+            r, p, n = _pearsonr(x, y)
+            season_persistence[metric] = {'r': r, 'p': p, 'n': n}
+
     for metric in ['GPS', 'GPSOT', 'GAOS', 'PPG']:
-        v = consecutive[metric].notna() & consecutive['Next_PPG'].notna()
-        if v.sum() > 10:
-            r, p = stats.pearsonr(consecutive.loc[v, metric], consecutive.loc[v, 'Next_PPG'])
-            season_persistence[f'{metric}_to_NextPPG'] = {'r': r, 'p': p, 'n': int(v.sum())}
-    
+        v = consecutive.select(pl.col(metric).is_not_null() & pl.col('Next_PPG').is_not_null()).to_series()
+        if int(v.sum()) > 10:
+            x = _df_to_np(consecutive.filter(v), metric)
+            y = _df_to_np(consecutive.filter(v), 'Next_PPG')
+            r, p, n = _pearsonr(x, y)
+            season_persistence[f'{metric}_to_NextPPG'] = {'r': r, 'p': p, 'n': n}
+
     results['season_to_season_persistence'] = season_persistence
-    
+
     return results
 
 
-def analyze_shot_decomposition(team_season: pd.DataFrame) -> Dict:
+def analyze_shot_decomposition(team_season: pl.DataFrame) -> Dict:
     """Decompose goals into volume, accuracy, finishing components."""
-    results = {}
-    
-    # Multiple regression
-    X = team_season[['Shots_PG', 'Shot_Accuracy', 'Goals_Per_Shot_OT']].dropna()
-    y = team_season.loc[X.index, 'PPG']
-    
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    reg = LinearRegression().fit(X_scaled, y)
-    
-    results['multiple_regression'] = {
-        'r2': reg.score(X_scaled, y),
-        'coefficients': dict(zip(X.columns, reg.coef_)),
-        'intercept': reg.intercept_
-    }
-    
+    results: Dict = {}
+
+    # Multiple regression: PPG ~ Shots_PG + Shot_Accuracy + Goals_Per_Shot_OT
+    x_cols = ['Shots_PG', 'Shot_Accuracy', 'Goals_Per_Shot_OT']
+    if all(c in team_season.columns for c in x_cols) and 'PPG' in team_season.columns:
+        Xdf = team_season.select(x_cols + ['PPG']).drop_nulls()
+        if Xdf.height > 10:
+            X = Xdf.select(x_cols).to_numpy()
+            y = Xdf.select('PPG').to_numpy().ravel()
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            reg = LinearRegression().fit(X_scaled, y)
+            results['multiple_regression'] = {
+                'r2': float(reg.score(X_scaled, y)),
+                'coefficients': {c: float(v) for c, v in zip(x_cols, reg.coef_)},
+                'intercept': float(reg.intercept_),
+            }
+
     # Log-linear decomposition
-    team_season['Log_GF'] = np.log(team_season['GF'] + 1)
-    team_season['Log_Shots'] = np.log(team_season['Shots'] + 1)
-    team_season['Log_Acc'] = np.log(team_season['Shot_Accuracy'].clip(0.01))
-    team_season['Log_GPSOT'] = np.log(team_season['Goals_Per_Shot_OT'].clip(0.01))
-    
-    X_log = team_season[['Log_Shots', 'Log_Acc', 'Log_GPSOT']].dropna()
-    y_log = team_season.loc[X_log.index, 'Log_GF']
-    reg_log = LinearRegression().fit(X_log, y_log)
-    
-    results['log_linear'] = {
-        'r2': reg_log.score(X_log, y_log),
-        'coefficients': dict(zip(X_log.columns, reg_log.coef_)),
-        'intercept': reg_log.intercept_
-    }
-    
+    ts = team_season.with_columns([
+        (pl.col('GF') + 1).log().alias('Log_GF'),
+        (pl.col('Shots') + 1).log().alias('Log_Shots'),
+        pl.col('Shot_Accuracy').clip(0.01).log().alias('Log_Acc'),
+        pl.col('Goals_Per_Shot_OT').clip(0.01).log().alias('Log_GPSOT'),
+    ])
+    xl_cols = ['Log_Shots', 'Log_Acc', 'Log_GPSOT']
+    if all(c in ts.columns for c in xl_cols) and 'Log_GF' in ts.columns:
+        Xldf = ts.select(xl_cols + ['Log_GF']).drop_nulls()
+        if Xldf.height > 10:
+            X = Xldf.select(xl_cols).to_numpy()
+            y = Xldf.select('Log_GF').to_numpy().ravel()
+            reg_log = LinearRegression().fit(X, y)
+            results['log_linear'] = {
+                'r2': float(reg_log.score(X, y)),
+                'coefficients': {c: float(v) for c, v in zip(xl_cols, reg_log.coef_)},
+                'intercept': float(reg_log.intercept_),
+            }
+
     # Correlation matrix
     corr_vars = ['Shots_PG', 'Shot_Accuracy', 'Goals_Per_Shot_OT', 'PPG']
-    results['correlation_matrix'] = team_season[corr_vars].corr().round(3).to_dict()
-    
-    # Attack-Defense profiles
-    team_season['Attack_Profile'] = pd.qcut(team_season['Shots_PG'], 3, labels=['Low', 'Medium', 'High'])
-    team_season['Finishing_Profile'] = pd.qcut(team_season['Goals_Per_Shot_OT'], 3, labels=['Poor', 'Average', 'Clinical'])
-    pivot_attack = team_season.pivot_table(values='PPG', index='Attack_Profile', columns='Finishing_Profile', aggfunc='mean')
-    results['attack_profile_ppg'] = pivot_attack.round(2).to_dict()
-    
-    team_season['Opp_Shots_PG'] = team_season['Shots_Against'] / team_season['Matches']
-    team_season['Defensive_Resilience'] = team_season['GA'] / team_season['Shots_Against']
-    team_season['Def_Volume'] = pd.qcut(team_season['Opp_Shots_PG'], 3, labels=['Low', 'Med', 'High'])
-    team_season['Def_Resilience'] = pd.qcut(team_season['Defensive_Resilience'], 3, labels=['Resilient', 'Average', 'Vulnerable'])
-    pivot_def = team_season.pivot_table(values='PPG', index='Def_Volume', columns='Def_Resilience', aggfunc='mean')
-    results['defense_profile_ppg'] = pivot_def.round(2).to_dict()
-    
+    if all(c in team_season.columns for c in corr_vars):
+        cm = team_season.select(corr_vars).to_numpy()
+        corr_mat = np.corrcoef(cm, rowvar=False)
+        results['correlation_matrix'] = {
+            (i, j): float(round(corr_mat[i, j], 3))
+            for i in range(len(corr_vars)) for j in range(len(corr_vars))
+        }
+
+    # Attack-Defense profiles (quartile-style terciles via qcut equivalent)
+    ts2 = team_season.clone()
+    def _qcut3(expr: pl.Expr, labels: List[str]) -> pl.Expr:
+        q1 = expr.quantile(1/3)
+        q2 = expr.quantile(2/3)
+        return (pl.when(expr <= q1).then(pl.lit(labels[0]))
+                .when(expr <= q2).then(pl.lit(labels[1]))
+                .otherwise(pl.lit(labels[2])))
+
+    ts2 = ts2.with_columns([
+        _qcut3(pl.col('Shots_PG'), ['Low', 'Medium', 'High']).alias('Attack_Profile'),
+        _qcut3(pl.col('Goals_Per_Shot_OT'), ['Poor', 'Average', 'Clinical']).alias('Finishing_Profile'),
+    ])
+    pivot_attack = ts2.group_by(['Attack_Profile', 'Finishing_Profile']).agg(
+        pl.col('PPG').mean().round(2)
+    ).sort(['Attack_Profile', 'Finishing_Profile'])
+    pivot_attack = pivot_attack.pivot(on='Finishing_Profile', index='Attack_Profile', values='PPG')
+    results['attack_profile_ppg'] = pivot_attack
+
+    ts2 = ts2.with_columns([
+        (pl.col('Shots_Against') / pl.col('Matches')).alias('Opp_Shots_PG'),
+        (pl.col('GA') / pl.col('Shots_Against')).alias('Defensive_Resilience'),
+    ])
+    ts2 = ts2.with_columns([
+        _qcut3(pl.col('Opp_Shots_PG'), ['Low', 'Med', 'High']).alias('Def_Volume'),
+        _qcut3(pl.col('Defensive_Resilience'), ['Resilient', 'Average', 'Vulnerable']).alias('Def_Resilience'),
+    ])
+    pivot_def = ts2.group_by(['Def_Volume', 'Def_Resilience']).agg(
+        pl.col('PPG').mean().round(2)
+    ).sort(['Def_Volume', 'Def_Resilience'])
+    pivot_def = pivot_def.pivot(on='Def_Resilience', index='Def_Volume', values='PPG')
+    results['defense_profile_ppg'] = pivot_def
+
     return results
 
 
-def analyze_ht_ft_dynamics(master: pd.DataFrame) -> Dict:
+def analyze_ht_ft_dynamics(master: pl.DataFrame) -> Dict:
     """Analyze half-time to full-time transitions and second-half patterns."""
-    results = {}
-    
+    results: Dict = {}
+
     # Transition matrix (normalized)
-    transitions = pd.crosstab(master['HTR'], master['FTR'], normalize='index').round(3)
-    results['transitions_norm'] = transitions
-    
-    # Transition counts
-    trans_counts = pd.crosstab(master['HTR'], master['FTR'])
-    results['transitions_counts'] = trans_counts
-    
-    # Comeback analysis
-    ht_trailing_ft_not_lose = master[
-        ((master['HTR'] == 'H') & (master['FTR'] == 'A')) |
-        ((master['HTR'] == 'A') & (master['FTR'] == 'H')) |
-        ((master['HTR'] == 'H') & (master['FTR'] == 'D')) |
-        ((master['HTR'] == 'A') & (master['FTR'] == 'D'))
-    ]
-    results['comeback_matches'] = len(ht_trailing_ft_not_lose)
-    results['comeback_rate'] = len(ht_trailing_ft_not_lose) / len(master)
-    
-    # Failed to hold lead
-    ht_leading_ft_not_win = master[
-        ((master['HTR'] == 'H') & (master['FTR'] != 'H')) |
-        ((master['HTR'] == 'A') & (master['FTR'] != 'A'))
-    ]
-    results['failed_hold_lead_matches'] = len(ht_leading_ft_not_win)
-    results['failed_hold_lead_rate'] = len(ht_leading_ft_not_win) / len(master)
-    
-    # Second-half goals
-    master = master.copy()
-    master['SH_Goals_Home'] = master['FTHG'] - master['HTHG']
-    master['SH_Goals_Away'] = master['FTAG'] - master['HTAG']
-    master['SH_Total_Goals'] = master['SH_Goals_Home'] + master['SH_Goals_Away']
-    master['FH_Total_Goals'] = master['HTHG'] + master['HTAG']
-    
-    results['avg_fh_goals'] = master['FH_Total_Goals'].mean()
-    results['avg_sh_goals'] = master['SH_Total_Goals'].mean()
-    results['sh_goal_share'] = master['SH_Total_Goals'].sum() / (master['FH_Total_Goals'].sum() + master['SH_Total_Goals'].sum())
-    
-    # By league
-    sh_by_league = master.groupby('Div').apply(
-        lambda x: pd.Series({
-            'FH_Goals': x['FH_Total_Goals'].sum(),
-            'SH_Goals': x['SH_Total_Goals'].sum(),
-            'SH_Pct': x['SH_Total_Goals'].sum() / (x['FH_Total_Goals'].sum() + x['SH_Total_Goals'].sum())
-        })
+    ct = master.group_by(['HTR', 'FTR']).agg(pl.len().alias('n')).sort(['HTR', 'FTR'])
+    row_totals = ct.group_by('HTR').agg(pl.col('n').sum().alias('row_total'))
+    ct = ct.join(row_totals, on='HTR', how='left').with_columns(
+        (pl.col('n') / pl.col('row_total')).round(3).alias('prob')
     )
+    transitions_norm = ct.pivot(on='FTR', index='HTR', values='prob')
+    results['transitions_norm'] = transitions_norm
+
+    trans_counts = master.group_by(['HTR', 'FTR']).agg(pl.len().alias('n')).sort(['HTR', 'FTR'])
+    trans_counts = trans_counts.pivot(on='FTR', index='HTR', values='n')
+    results['transitions_counts'] = trans_counts
+
+    # Comeback analysis
+    ht_trailing_ft_not_lose = master.filter(
+        ((pl.col('HTR') == 'H') & (pl.col('FTR').is_in(['A', 'D']))) |
+        ((pl.col('HTR') == 'A') & (pl.col('FTR').is_in(['H', 'D'])))
+    )
+    results['comeback_matches'] = int(ht_trailing_ft_not_lose.height)
+    results['comeback_rate'] = float(ht_trailing_ft_not_lose.height / master.height)
+
+    # Failed to hold lead
+    ht_leading_ft_not_win = master.filter(
+        ((pl.col('HTR') == 'H') & (pl.col('FTR') != 'H')) |
+        ((pl.col('HTR') == 'A') & (pl.col('FTR') != 'A'))
+    )
+    results['failed_hold_lead_matches'] = int(ht_leading_ft_not_win.height)
+    results['failed_hold_lead_rate'] = float(ht_leading_ft_not_win.height / master.height)
+
+    # Second-half goals
+    master = master.with_columns([
+        (pl.col('FTHG') - pl.col('HTHG')).alias('SH_Goals_Home'),
+        (pl.col('FTAG') - pl.col('HTAG')).alias('SH_Goals_Away'),
+    ])
+    master = master.with_columns([
+        (pl.col('SH_Goals_Home') + pl.col('SH_Goals_Away')).alias('SH_Total_Goals'),
+        (pl.col('HTHG') + pl.col('HTAG')).alias('FH_Total_Goals'),
+    ])
+
+    results['avg_fh_goals'] = float(master.select(pl.col('FH_Total_Goals').mean()).to_series()[0])
+    results['avg_sh_goals'] = float(master.select(pl.col('SH_Total_Goals').mean()).to_series()[0])
+    results['sh_goal_share'] = float(
+        master.select(pl.col('SH_Total_Goals').sum()).to_series()[0] /
+        (master.select(pl.col('FH_Total_Goals').sum()).to_series()[0] +
+         master.select(pl.col('SH_Total_Goals').sum()).to_series()[0])
+    )
+
+    # By league
+    sh_by_league = master.group_by('Div').agg([
+        pl.col('FH_Total_Goals').sum().alias('FH_Goals'),
+        pl.col('SH_Total_Goals').sum().alias('SH_Goals'),
+    ]).with_columns(
+        (pl.col('SH_Goals') / (pl.col('FH_Goals') + pl.col('SH_Goals'))).round(4).alias('SH_Pct')
+    ).sort('Div')
     results['sh_by_league'] = sh_by_league
-    
+
     # SH goals by HT result
-    sh_by_ht = master.groupby('HTR')['SH_Total_Goals'].mean()
+    sh_by_ht = master.group_by('HTR').agg(pl.col('SH_Total_Goals').mean().round(4)).sort('HTR')
     results['sh_by_ht_result'] = sh_by_ht
-    
+
     # Comeback rates by league
     comeback_data = []
-    for league in master['Div'].unique():
-        lg = master[master['Div'] == league]
-        trailing = ((lg['HTR'] == 'H') & (lg['FTR'] == 'A')) | ((lg['HTR'] == 'A') & (lg['FTR'] == 'H'))
-        drawing = ((lg['HTR'] == 'H') & (lg['FTR'] == 'D')) | ((lg['HTR'] == 'A') & (lg['FTR'] == 'D'))
-        total_trailing = (lg['HTR'] != 'D').sum()
+    for league in master.select(pl.col('Div').unique()).to_series().to_list():
+        lg = master.filter(pl.col('Div') == league)
+        trailing_series = ((lg.select(pl.col('HTR') == 'H').to_series()) &
+                           (lg.select(pl.col('FTR') == 'A').to_series())) | \
+                          ((lg.select(pl.col('HTR') == 'A').to_series()) &
+                           (lg.select(pl.col('FTR') == 'H').to_series()))
+        drawing_series = ((lg.select(pl.col('HTR') == 'H').to_series()) &
+                          (lg.select(pl.col('FTR') == 'D').to_series())) | \
+                         ((lg.select(pl.col('HTR') == 'A').to_series()) &
+                          (lg.select(pl.col('FTR') == 'D').to_series()))
+        total_trailing = int((lg.select(pl.col('HTR') != 'D').to_series().sum()))
         if total_trailing > 0:
             comeback_data.append({
                 'League': league,
-                'Trailing_Win_Pct': trailing.sum() / total_trailing,
-                'Trailing_Draw_Pct': drawing.sum() / total_trailing,
-                'Trailing_Avoid_Loss_Pct': (trailing.sum() + drawing.sum()) / total_trailing
+                'Trailing_Win_Pct': float(trailing_series.sum() / total_trailing),
+                'Trailing_Draw_Pct': float(drawing_series.sum() / total_trailing),
+                'Trailing_Avoid_Loss_Pct': float((trailing_series.sum() + drawing_series.sum()) / total_trailing),
             })
-    results['comeback_by_league'] = pd.DataFrame(comeback_data)
-    
+    results['comeback_by_league'] = pl.DataFrame(comeback_data)
+
     # Team-level comeback ability
-    team_comebacks = pd.concat([
-        master.assign(Team=master['HomeTeam'], HT_GD=master['HTHG']-master['HTAG'], FT_GD=master['FTHG']-master['FTAG']),
-        master.assign(Team=master['AwayTeam'], HT_GD=master['HTAG']-master['HTHG'], FT_GD=master['FTAG']-master['FTHG'])
+    home_side = master.with_columns([
+        pl.col('HomeTeam').alias('Team'),
+        (pl.col('HTHG') - pl.col('HTAG')).alias('HT_GD'),
+        (pl.col('FTHG') - pl.col('FTAG')).alias('FT_GD'),
     ])
-    trailing = team_comebacks[team_comebacks['HT_GD'] < 0].copy()
-    trailing['Recovered'] = (trailing['FT_GD'] > 0).astype(int)
-    trailing['Avoided_Loss'] = (trailing['FT_GD'] >= 0).astype(int)
-    
-    team_comeback_stats = trailing.groupby('Team').agg(
-        Trailing_Count=('Recovered', 'count'),
-        Recoveries=('Recovered', 'sum'),
-        Avoided_Losses=('Avoided_Loss', 'sum')
-    ).reset_index()
-    team_comeback_stats = team_comeback_stats[team_comeback_stats['Trailing_Count'] >= 10]
-    team_comeback_stats['Recovery_Rate'] = team_comeback_stats['Recoveries'] / team_comeback_stats['Trailing_Count']
-    team_comeback_stats['Avoid_Loss_Rate'] = team_comeback_stats['Avoided_Losses'] / team_comeback_stats['Trailing_Count']
-    results['team_comeback_stats'] = team_comeback_stats.sort_values('Recovery_Rate', ascending=False)
-    
+    away_side = master.with_columns([
+        pl.col('AwayTeam').alias('Team'),
+        (pl.col('HTAG') - pl.col('HTHG')).alias('HT_GD'),
+        (pl.col('FTAG') - pl.col('FTHG')).alias('FT_GD'),
+    ])
+    team_comebacks = pl.concat([home_side.select(['Div', 'Season', 'Team', 'HT_GD', 'FT_GD']),
+                                away_side.select(['Div', 'Season', 'Team', 'HT_GD', 'FT_GD'])])
+    trailing = team_comebacks.filter(pl.col('HT_GD') < 0).with_columns([
+        (pl.col('FT_GD') > 0).cast(pl.Int8).alias('Recovered'),
+        (pl.col('FT_GD') >= 0).cast(pl.Int8).alias('Avoided_Loss'),
+    ])
+    team_comeback_stats = trailing.group_by('Team').agg([
+        pl.len().alias('Trailing_Count'),
+        pl.col('Recovered').sum().alias('Recoveries'),
+        pl.col('Avoided_Loss').sum().alias('Avoided_Losses'),
+    ]).filter(pl.col('Trailing_Count') >= 10).with_columns([
+        (pl.col('Recoveries') / pl.col('Trailing_Count')).round(4).alias('Recovery_Rate'),
+        (pl.col('Avoided_Losses') / pl.col('Trailing_Count')).round(4).alias('Avoid_Loss_Rate'),
+    ]).sort('Recovery_Rate', descending=True)
+    results['team_comeback_stats'] = team_comeback_stats
+
     return results
 
 
-def analyze_consistency(team_matches: pd.DataFrame, min_matches: int = 20) -> Dict:
+def analyze_consistency(team_matches: pl.DataFrame, min_matches: int = 20) -> Dict:
     """Analyze team performance consistency."""
-    results = {}
-    
-    # Season-level consistency
-    consistency = team_matches.groupby(['Div', 'Team', 'Season']).agg(
-        Points_Std=('Points', 'std'),
-        GF_Std=('GF', 'std'),
-        GA_Std=('GA', 'std'),
-        Shots_Std=('Shots', 'std'),
-        GD_Std=('GD', 'std'),
-        PPG=('Points', 'mean'),
-        GF_PG=('GF', 'mean'),
-        GA_PG=('GA', 'mean'),
-        Matches=('Points', 'count')
-    ).reset_index()
-    
-    consistency = consistency[consistency['Matches'] >= min_matches].copy()
-    consistency['Points_CV'] = consistency['Points_Std'] / consistency['PPG']
-    consistency['GF_CV'] = consistency['GF_Std'] / consistency['GF_PG']
-    consistency['GA_CV'] = consistency['GA_Std'] / consistency['GA_PG']
+    results: Dict = {}
+
+    consistency = team_matches.group_by(TEAM_SEASON_GROUP).agg([
+        pl.col('Points').std().alias('Points_Std'),
+        pl.col('GF').std().alias('GF_Std'),
+        pl.col('GA').std().alias('GA_Std'),
+        pl.col('Shots').std().alias('Shots_Std'),
+        pl.col('GD').std().alias('GD_Std'),
+        pl.col('Points').mean().alias('PPG'),
+        pl.col('GF').mean().alias('GF_PG'),
+        pl.col('GA').mean().alias('GA_PG'),
+        pl.len().alias('Matches'),
+    ]).filter(pl.col('Matches') >= min_matches).with_columns([
+        (pl.col('Points_Std') / pl.col('PPG')).round(4).alias('Points_CV'),
+        (pl.col('GF_Std') / pl.col('GF_PG')).round(4).alias('GF_CV'),
+        (pl.col('GA_Std') / pl.col('GA_PG')).round(4).alias('GA_CV'),
+    ])
     results['season_consistency'] = consistency
-    
+
     # Team-level (3+ seasons)
-    team_consistency = consistency.groupby('Team').agg(
-        Seasons=('Season', 'count'),
-        Avg_PPG=('PPG', 'mean'),
-        Avg_Points_CV=('Points_CV', 'mean'),
-        Avg_GF_CV=('GF_CV', 'mean'),
-        Avg_GA_CV=('GA_CV', 'mean')
-    ).reset_index()
-    team_consistency = team_consistency[team_consistency['Seasons'] >= 3]
+    team_consistency = consistency.group_by('Team').agg([
+        pl.len().alias('Seasons'),
+        pl.col('PPG').mean().round(4).alias('Avg_PPG'),
+        pl.col('Points_CV').mean().round(4).alias('Avg_Points_CV'),
+        pl.col('GF_CV').mean().round(4).alias('Avg_GF_CV'),
+        pl.col('GA_CV').mean().round(4).alias('Avg_GA_CV'),
+    ]).filter(pl.col('Seasons') >= 3)
     results['team_consistency'] = team_consistency
-    
-    # Most/least consistent
-    results['most_consistent'] = team_consistency.nsmallest(10, 'Avg_Points_CV')
-    results['least_consistent'] = team_consistency.nlargest(10, 'Avg_Points_CV')
-    
-    # Summary stats
-    results['median_points_cv'] = consistency['Points_CV'].median()
-    results['median_gf_cv'] = consistency['GF_CV'].median()
-    results['median_ga_cv'] = consistency['GA_CV'].median()
-    
+
+    results['most_consistent'] = team_consistency.sort('Avg_Points_CV').head(10)
+    results['least_consistent'] = team_consistency.sort('Avg_Points_CV', descending=True).head(10)
+
+    results['median_points_cv'] = float(consistency.select(pl.col('Points_CV').median()).to_series()[0])
+    results['median_gf_cv'] = float(consistency.select(pl.col('GF_CV').median()).to_series()[0])
+    results['median_ga_cv'] = float(consistency.select(pl.col('GA_CV').median()).to_series()[0])
+
     return results
 
 
-def analyze_discipline(team_matches: pd.DataFrame, master: pd.DataFrame, min_matches: int = 20) -> Dict:
+def analyze_discipline(team_matches: pl.DataFrame, master: pl.DataFrame,
+                       min_matches: int = 20) -> Dict:
     """Analyze disciplinary patterns and their association with results."""
-    results = {}
-    
+    results: Dict = {}
+
     # Team-season discipline
-    team_season_disc = team_matches.groupby(['Div', 'Team', 'Season']).agg(
-        Matches=('GF', 'count'),
-        Yellow=('Yellow', 'sum'),
-        Red=('Red', 'sum'),
-        Fouls=('Fouls', 'sum'),
-        Fouls_Against=('Fouls_Against', 'sum'),
-        Points=('Points', 'sum'),
-    ).reset_index()
-    team_season_disc = team_season_disc[team_season_disc['Matches'] >= min_matches].copy()
-    team_season_disc['PPG'] = team_season_disc['Points'] / team_season_disc['Matches']
-    team_season_disc['Yellow_PG'] = team_season_disc['Yellow'] / team_season_disc['Matches']
-    team_season_disc['Red_PG'] = team_season_disc['Red'] / team_season_disc['Matches']
-    team_season_disc['Fouls_PG'] = team_season_disc['Fouls'] / team_season_disc['Matches']
-    team_season_disc['Cards_PG'] = team_season_disc['Yellow_PG'] + team_season_disc['Red_PG']
-    
+    team_season_disc = team_matches.group_by(TEAM_SEASON_GROUP).agg([
+        pl.len().alias('Matches'),
+        pl.col('Yellow').sum().alias('Yellow'),
+        pl.col('Red').sum().alias('Red'),
+        pl.col('Fouls').sum().alias('Fouls'),
+        pl.col('Fouls_Against').sum().alias('Fouls_Against'),
+        pl.col('Points').sum().alias('Points'),
+    ]).filter(pl.col('Matches') >= min_matches).with_columns([
+        (pl.col('Points') / pl.col('Matches')).round(4).alias('PPG'),
+        (pl.col('Yellow') / pl.col('Matches')).round(4).alias('Yellow_PG'),
+        (pl.col('Red') / pl.col('Matches')).round(4).alias('Red_PG'),
+        (pl.col('Fouls') / pl.col('Matches')).round(4).alias('Fouls_PG'),
+    ]).with_columns(
+        (pl.col('Yellow_PG') + pl.col('Red_PG')).round(4).alias('Cards_PG')
+    )
+
     # Correlation with PPG
-    disc_corrs = {}
+    disc_corrs: Dict = {}
     for metric in ['Yellow_PG', 'Red_PG', 'Fouls_PG', 'Cards_PG']:
-        r, p = stats.pearsonr(team_season_disc[metric], team_season_disc['PPG'])
-        disc_corrs[metric] = {'r': r, 'p': p}
+        v = team_season_disc.select(pl.col(metric).is_not_null() & pl.col('PPG').is_not_null()).to_series()
+        if int(v.sum()) > 10:
+            x = _df_to_np(team_season_disc.filter(v), metric)
+            y = _df_to_np(team_season_disc.filter(v), 'PPG')
+            r, p, n = _pearsonr(x, y)
+            disc_corrs[metric] = {'r': r, 'p': p}
     results['ppg_correlations'] = disc_corrs
-    
+
     # By venue
-    venue_disc = team_matches.groupby('Venue').agg(
-        Yellow_PG=('Yellow', 'mean'),
-        Red_PG=('Red', 'mean'),
-        Fouls_PG=('Fouls', 'mean'),
-        Matches=('Yellow', 'count')
-    ).reset_index()
+    venue_disc = team_matches.group_by('Venue').agg([
+        pl.col('Yellow').mean().round(4).alias('Yellow_PG'),
+        pl.col('Red').mean().round(4).alias('Red_PG'),
+        pl.col('Fouls').mean().round(4).alias('Fouls_PG'),
+        pl.len().alias('Matches'),
+    ]).sort('Venue')
     results['by_venue'] = venue_disc
-    
+
     # Red card impact
-    home_red = master[master['HR'] > 0]
-    away_red = master[master['AR'] > 0]
-    
-    baseline_home_win = (master['FTR'] == 'H').mean()
-    baseline_away_win = (master['FTR'] == 'A').mean()
-    baseline_draw = (master['FTR'] == 'D').mean()
-    
+    home_red = master.filter(pl.col('HR') > 0)
+    away_red = master.filter(pl.col('AR') > 0)
+    baseline_home_win = float((master.select(pl.col('FTR') == 'H').to_series().mean()))
+    baseline_away_win = float((master.select(pl.col('FTR') == 'A').to_series().mean()))
+    baseline_draw = float((master.select(pl.col('FTR') == 'D').to_series().mean()))
+
+    def _mean_bool(df: pl.DataFrame, cond: pl.Expr) -> float:
+        if df.height == 0:
+            return float('nan')
+        return float(df.select(cond).to_series().mean())
+
     results['red_card_impact'] = {
         'baseline': {'home_win': baseline_home_win, 'draw': baseline_draw, 'away_win': baseline_away_win},
         'home_red': {
-            'home_win': (home_red['FTR'] == 'H').mean(),
-            'draw': (home_red['FTR'] == 'D').mean(),
-            'away_win': (home_red['FTR'] == 'A').mean(),
-            'n': len(home_red)
+            'home_win': _mean_bool(home_red, pl.col('FTR') == 'H'),
+            'draw': _mean_bool(home_red, pl.col('FTR') == 'D'),
+            'away_win': _mean_bool(home_red, pl.col('FTR') == 'A'),
+            'n': home_red.height,
         },
         'away_red': {
-            'home_win': (away_red['FTR'] == 'H').mean(),
-            'draw': (away_red['FTR'] == 'D').mean(),
-            'away_win': (away_red['FTR'] == 'A').mean(),
-            'n': len(away_red)
-        }
+            'home_win': _mean_bool(away_red, pl.col('FTR') == 'H'),
+            'draw': _mean_bool(away_red, pl.col('FTR') == 'D'),
+            'away_win': _mean_bool(away_red, pl.col('FTR') == 'A'),
+            'n': away_red.height,
+        },
     }
-    
+
     # Red card by HT result
-    results['home_red_by_ht'] = home_red.groupby('HTR')['FTR'].value_counts(normalize=True).unstack(fill_value=0).round(3).to_dict()
-    results['away_red_by_ht'] = away_red.groupby('HTR')['FTR'].value_counts(normalize=True).unstack(fill_value=0).round(3).to_dict()
-    
+    def _red_by_ht(df: pl.DataFrame):
+        if df.height == 0:
+            return {}
+        g = df.group_by(['HTR', 'FTR']).agg(pl.len().alias('n'))
+        totals = g.group_by('HTR').agg(pl.col('n').sum().alias('tot'))
+        g = g.join(totals, on='HTR').with_columns((pl.col('n') / pl.col('tot')).round(3))
+        return g.pivot(on='FTR', index='HTR', values='n').to_dicts()
+    results['home_red_by_ht'] = _red_by_ht(home_red)
+    results['away_red_by_ht'] = _red_by_ht(away_red)
+
     # Match-level: cards/fouls vs result
-    team_matches = team_matches.copy()
-    team_matches['Card_Count'] = team_matches['Yellow'] + team_matches['Red']
-    result_numeric = team_matches['FT_Result'].map({'W': 2, 'D': 1, 'L': 0})
-    valid = result_numeric.notna() & team_matches['Card_Count'].notna() & team_matches['Fouls'].notna() & team_matches['Fouls_Against'].notna()
-    
-    r_cards, p_cards = stats.pearsonr(team_matches.loc[valid, 'Card_Count'], result_numeric.loc[valid])
-    r_fouls, p_fouls = stats.pearsonr(team_matches.loc[valid, 'Fouls'], result_numeric.loc[valid])
-    r_fouls_against, p_fouls_against = stats.pearsonr(team_matches.loc[valid, 'Fouls_Against'], result_numeric.loc[valid])
-    
+    tm = team_matches.with_columns(
+        (pl.col('Yellow') + pl.col('Red')).alias('Card_Count')
+    )
+    result_numeric = pl.when(pl.col('FT_Result') == 'W').then(2).when(
+        pl.col('FT_Result') == 'D').then(1).otherwise(0).cast(pl.Float64).alias('result_numeric')
+    tm = tm.with_columns(result_numeric)
+    valid = tm.select(pl.col('result_numeric').is_not_null() & pl.col('Card_Count').is_not_null() &
+                      pl.col('Fouls').is_not_null() & pl.col('Fouls_Against').is_not_null()).to_series()
+    if int(valid.sum()) > 2:
+        tmv = tm.filter(valid)
+        y = _df_to_np(tmv, 'result_numeric')
+        x_cards = _df_to_np(tmv, 'Card_Count')
+        r_cards, p_cards, _ = _pearsonr(x_cards, y)
+        x_fouls = _df_to_np(tmv, 'Fouls')
+        r_fouls, p_fouls, _ = _pearsonr(x_fouls, y)
+        x_fa = _df_to_np(tmv, 'Fouls_Against')
+        r_fouls_against, p_fouls_against, _ = _pearsonr(x_fa, y)
+    else:
+        r_cards = p_cards = r_fouls = p_fouls = r_fouls_against = p_fouls_against = float('nan')
     results['match_level_correlations'] = {
         'cards_vs_result': {'r': r_cards, 'p': p_cards},
         'fouls_vs_result': {'r': r_fouls, 'p': p_fouls},
-        'fouls_drawn_vs_result': {'r': r_fouls_against, 'p': p_fouls_against}
+        'fouls_drawn_vs_result': {'r': r_fouls_against, 'p': p_fouls_against},
     }
-    
+
     # Foul differential
-    team_season_disc2 = team_matches.groupby(['Div', 'Team', 'Season']).agg(
-        Matches=('GF', 'count'),
-        Fouls=('Fouls', 'sum'),
-        Fouls_Against=('Fouls_Against', 'sum'),
-        Points=('Points', 'sum'),
-    ).reset_index()
-    team_season_disc2 = team_season_disc2[team_season_disc2['Matches'] >= min_matches].copy()
-    team_season_disc2['PPG'] = team_season_disc2['Points'] / team_season_disc2['Matches']
-    team_season_disc2['Foul_Diff_PG'] = (team_season_disc2['Fouls'] - team_season_disc2['Fouls_Against']) / team_season_disc2['Matches']
-    
-    r_fd, p_fd = stats.pearsonr(team_season_disc2['Foul_Diff_PG'], team_season_disc2['PPG'])
+    team_season_disc2 = team_matches.group_by(TEAM_SEASON_GROUP).agg([
+        pl.len().alias('Matches'),
+        pl.col('Fouls').sum().alias('Fouls'),
+        pl.col('Fouls_Against').sum().alias('Fouls_Against'),
+        pl.col('Points').sum().alias('Points'),
+    ]).filter(pl.col('Matches') >= min_matches).with_columns([
+        (pl.col('Points') / pl.col('Matches')).round(4).alias('PPG'),
+        ((pl.col('Fouls') - pl.col('Fouls_Against')) / pl.col('Matches')).round(4).alias('Foul_Diff_PG'),
+    ])
+
+    v = team_season_disc2.select(pl.col('Foul_Diff_PG').is_not_null() & pl.col('PPG').is_not_null()).to_series()
+    if int(v.sum()) > 10:
+        x = _df_to_np(team_season_disc2.filter(v), 'Foul_Diff_PG')
+        y = _df_to_np(team_season_disc2.filter(v), 'PPG')
+        r_fd, p_fd, _ = _pearsonr(x, y)
+    else:
+        r_fd = p_fd = float('nan')
     results['foul_differential_correlation'] = {'r': r_fd, 'p': p_fd}
-    
-    # Return the team-season discipline dataframes for plotting
+
     results['team_season_disc'] = team_season_disc
     results['team_season_disc2'] = team_season_disc2
-    
+
     return results
 
 
-def run_robustness_checks(team_matches: pd.DataFrame, master: pd.DataFrame) -> Dict:
+def run_robustness_checks(team_matches: pl.DataFrame, master: pl.DataFrame) -> Dict:
     """Run robustness and sensitivity checks."""
-    results = {}
-    
+    results: Dict = {}
+
     # Sample size sensitivity
-    team_season = team_matches.groupby(['Div', 'Team', 'Season']).agg(
-        Matches=('GF', 'count'),
-        GF=('GF', 'sum'), GA=('GA', 'sum'),
-        Shots=('Shots', 'sum'), Shots_OT=('Shots_OT', 'sum'),
-        Shots_Against=('Shots_Against', 'sum'),
-        Points=('Points', 'sum'),
-    ).reset_index()
-    team_season['GPS'] = team_season['GF'] / team_season['Shots']
-    team_season['PPG'] = team_season['Points'] / team_season['Matches']
-    
-    sample_sensitivity = {}
+    team_season = team_matches.group_by(TEAM_SEASON_GROUP).agg([
+        pl.len().alias('Matches'),
+        pl.col('GF').sum().alias('GF'),
+        pl.col('GA').sum().alias('GA'),
+        pl.col('Shots').sum().alias('Shots'),
+        pl.col('Shots_OT').sum().alias('Shots_OT'),
+        pl.col('Shots_Against').sum().alias('Shots_Against'),
+        pl.col('Points').sum().alias('Points'),
+    ]).with_columns([
+        (pl.col('GF') / pl.col('Shots')).alias('GPS'),
+        (pl.col('Points') / pl.col('Matches')).alias('PPG'),
+    ])
+
+    sample_sensitivity: Dict = {}
     for min_m in [10, 20, 30]:
-        ts = team_season[team_season['Matches'] >= min_m]
-        if len(ts) > 10:
-            r, p = stats.pearsonr(ts['GPS'], ts['PPG'])
-            sample_sensitivity[f'min_{min_m}'] = {'n': len(ts), 'r': r, 'p': p}
+        ts = team_season.filter(pl.col('Matches') >= min_m)
+        if ts.height > 10:
+            v = ts.select(pl.col('GPS').is_not_null() & pl.col('PPG').is_not_null()).to_series()
+            if int(v.sum()) > 2:
+                x = _df_to_np(ts.filter(v), 'GPS')
+                y = _df_to_np(ts.filter(v), 'PPG')
+                r, p, n = _pearsonr(x, y)
+                sample_sensitivity[f'min_{min_m}'] = {'n': int(v.sum()), 'r': r, 'p': p}
     results['sample_size_sensitivity'] = sample_sensitivity
-    
+
     # League tier comparison
     top_tier = ['E0', 'SP1', 'D1', 'I1', 'F1']
     lower_tier = ['E1', 'E2', 'E3']
-    
-    # Vectorized half-season persistence per tier (cumulative sums, no groupby.apply).
-    def _tier_half_eff(tier_data):
-        sum_cols = ['GF', 'GA', 'Shots', 'Shots_OT', 'Shots_Against', 'Shots_OT_Against']
-        tm_sub = tier_data.sort_values(['Div', 'Team', 'Season', 'Date']).copy()
-        grp = ['Div', 'Team', 'Season']
-        g = tm_sub.groupby(grp)
-        cc = g.cumcount().to_numpy()
-        n = g.transform('size').to_numpy()
+
+    def _tier_half_eff(tier_data: pl.DataFrame) -> pl.DataFrame:
+        tm_sub = tier_data.sort(['Div', 'Team', 'Season', 'Date'])
+        grp = TEAM_SEASON_GROUP
+        cc = tm_sub.select(pl.cum_count('Date').over(grp)).to_series().to_numpy()
+        n = tm_sub.select(pl.len().over(grp)).to_series().to_numpy()
         mid = n // 2
         first_mask = cc < mid
-        first = tm_sub[first_mask]
-        second = tm_sub[~first_mask]
-        first_sums = first.groupby(grp)[sum_cols].sum().add_suffix('_F')
-        second_sums = second.groupby(grp)[sum_cols].sum().add_suffix('_S')
-        half_eff = first_sums.join(second_sums).reset_index()
-        
-        def _ratio0(num, den):
-            return np.where(den > 0, num / den, np.nan)
-        
-        half_eff['GPS_F'] = _ratio0(half_eff['GF_F'], half_eff['Shots_F'])
-        half_eff['GPSOT_F'] = _ratio0(half_eff['GF_F'], half_eff['Shots_OT_F'])
-        half_eff['GAOS_F'] = _ratio0(half_eff['GA_F'], half_eff['Shots_Against_F'])
-        half_eff['GPS_S'] = _ratio0(half_eff['GF_S'], half_eff['Shots_S'])
-        half_eff['GPSOT_S'] = _ratio0(half_eff['GF_S'], half_eff['Shots_OT_S'])
-        half_eff['GAOS_S'] = _ratio0(half_eff['GA_S'], half_eff['Shots_Against_S'])
+        first = tm_sub.filter(pl.Series(first_mask))
+        second = tm_sub.filter(pl.Series(~first_mask))
+        sum_cols = ['GF', 'GA', 'Shots', 'Shots_OT', 'Shots_Against', 'Shots_OT_Against']
+        first_sums = first.group_by(grp).agg([pl.col(c).sum().alias(f'{c}_F') for c in sum_cols])
+        second_sums = second.group_by(grp).agg([pl.col(c).sum().alias(f'{c}_S') for c in sum_cols])
+        half_eff = first_sums.join(second_sums, on=grp, how='full', coalesce=True)
+
+        def _ratio0(num: str, den: str, name: str) -> pl.Expr:
+            return pl.when(pl.col(den) > 0).then(pl.col(num) / pl.col(den)).otherwise(None).alias(name)
+
+        half_eff = half_eff.with_columns([
+            _ratio0('GF_F', 'Shots_F', 'GPS_F'),
+            _ratio0('GF_F', 'Shots_OT_F', 'GPSOT_F'),
+            _ratio0('GA_F', 'Shots_Against_F', 'GAOS_F'),
+            _ratio0('GF_S', 'Shots_S', 'GPS_S'),
+            _ratio0('GF_S', 'Shots_OT_S', 'GPSOT_S'),
+            _ratio0('GA_S', 'Shots_Against_S', 'GAOS_S'),
+        ])
         return half_eff
-    
-    tier_persistence = {}
+
+    tier_persistence: Dict = {}
     for tier_name, tiers in [('Top_5', top_tier), ('Lower_Eng', lower_tier)]:
-        tier_data = team_matches[team_matches['Div'].isin(tiers)]
-        if len(tier_data) == 0:
+        tier_data = team_matches.filter(pl.col('Div').is_in(tiers))
+        if tier_data.height == 0:
             continue
         half_eff = _tier_half_eff(tier_data)
-
         for metric in ['GPS', 'GPSOT', 'GAOS']:
-            f_col = f'{metric}_F'
-            s_col = f'{metric}_S'
+            f_col = f'{metric}_F'; s_col = f'{metric}_S'
             if f_col in half_eff.columns and s_col in half_eff.columns:
-                v = half_eff[f_col].notna() & half_eff[s_col].notna()
-                if v.sum() > 10:
-                    r, p = stats.pearsonr(half_eff.loc[v, f_col], half_eff.loc[v, s_col])
-                    tier_persistence[f'{tier_name}_{metric}'] = {'r': r, 'p': p, 'n': int(v.sum())}
+                v = half_eff.select(pl.col(f_col).is_not_null() & pl.col(s_col).is_not_null()).to_series()
+                if int(v.sum()) > 10:
+                    x = _df_to_np(half_eff.filter(v), f_col)
+                    y = _df_to_np(half_eff.filter(v), s_col)
+                    r, p, n = _pearsonr(x, y)
+                    tier_persistence[f'{tier_name}_{metric}'] = {'r': r, 'p': p, 'n': n}
     results['tier_persistence'] = tier_persistence
-    
+
     return results

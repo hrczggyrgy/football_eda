@@ -8,12 +8,27 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
+
+import polars as pl
 
 COLORS = {'Home': '#2E86AB', 'Away': '#A23B72', 'Draw': '#F18F01'}
 PALETTE = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
 LEAGUE_COLORS = {'E0': '#1f77b4', 'E1': '#ff7f0e', 'E2': '#2ca02c', 'E3': '#d62728',
                  'SP1': '#9467bd', 'D1': '#8c564b', 'I1': '#e377c2', 'F1': '#7f7f7f'}
+
+
+def _to_pandas(obj):
+    if isinstance(obj, pl.DataFrame):
+        return obj.to_pandas()
+    if isinstance(obj, pl.Series):
+        return obj.to_pandas()
+    if isinstance(obj, dict):
+        return {k: _to_pandas(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_pandas(v) for v in obj)
+    return obj
+
 
 def save_figure(fig, filepath: str, dpi: int = 150):
     """Save figure with consistent settings."""
@@ -97,7 +112,7 @@ def plot_league_style_fingerprints(results: Dict, figures_dir: str = '.', tables
     files = []
     
     style_df = results['league_season_style']
-    dist_matrix = results.get('style_distance_matrix', pd.DataFrame())
+    dist_matrix = results.get('style_distance_matrix_sq', results.get('style_distance_matrix', pd.DataFrame()))
     convergence = results.get('convergence', pd.DataFrame())
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -143,6 +158,10 @@ def plot_league_style_fingerprints(results: Dict, figures_dir: str = '.', tables
     # Panel D: Style distance heatmap
     ax = axes[1, 1]
     if len(dist_matrix) > 0:
+        # The Polars distance matrix is carried as an 'idx' column of tuples;
+        # promote it to the row index for square-matrix indexing.
+        if 'idx' in dist_matrix.columns:
+            dist_matrix = dist_matrix.set_index('idx')
         # Order by league then season
         ordered_idx = sorted(dist_matrix.index, key=lambda x: (x[0], x[1]))
         dist_ordered = dist_matrix.loc[ordered_idx, ordered_idx]
@@ -389,16 +408,19 @@ def plot_shooting_profiles(results: Dict, figures_dir: str = '.', tables_dir: st
     # Panel C: Transition matrix heatmap
     ax = axes[1, 0]
     if len(trans_matrix_z) > 0:
-        im = ax.imshow(trans_matrix_z.values, aspect='auto', cmap='Blues', vmin=0, vmax=1)
-        ax.set_xticks(range(len(trans_matrix_z.columns)))
-        ax.set_xticklabels([c.replace('_', ' ') for c in trans_matrix_z.columns], rotation=45, ha='right', fontsize=8)
-        ax.set_yticks(range(len(trans_matrix_z.index)))
-        ax.set_yticklabels([i.replace('_', ' ') for i in trans_matrix_z.index], fontsize=8)
+        tmz = trans_matrix_z.copy()
+        if 'Prev_Profile_z' in tmz.columns:
+            tmz = tmz.set_index('Prev_Profile_z')
+        im = ax.imshow(tmz.values, aspect='auto', cmap='Blues', vmin=0, vmax=1)
+        ax.set_xticks(range(len(tmz.columns)))
+        ax.set_xticklabels([c.replace('_', ' ') for c in tmz.columns], rotation=45, ha='right', fontsize=8)
+        ax.set_yticks(range(len(tmz.index)))
+        ax.set_yticklabels([i.replace('_', ' ') for i in tmz.index], fontsize=8)
         
         # Annotate
-        for i in range(trans_matrix_z.shape[0]):
-            for j in range(trans_matrix_z.shape[1]):
-                val = trans_matrix_z.iloc[i, j]
+        for i in range(tmz.shape[0]):
+            for j in range(tmz.shape[1]):
+                val = tmz.iloc[i, j]
                 ax.text(j, i, f'{val:.2f}', ha='center', va='center', 
                        color='white' if val > 0.5 else 'black', fontsize=9)
         
@@ -588,7 +610,11 @@ def plot_clutch_performance(results: Dict, figures_dir: str = '.', tables_dir: s
 
 
 def create_all_next_figures(results: Dict, figures_dir: str = '.', tables_dir: str = '.') -> List[str]:
-    """Create all 5 next insight figures."""
+    """Create all 5 next insight figures.
+
+    Polars inputs are converted to pandas at the plotting boundary.
+    """
+    results = _to_pandas(results)
     all_files = []
     
     all_files.extend(plot_competitive_balance(results['competitive_balance'], figures_dir, tables_dir))

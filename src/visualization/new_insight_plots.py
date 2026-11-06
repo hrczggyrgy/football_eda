@@ -9,10 +9,25 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
+
+import polars as pl
 
 COLORS = {'Home': '#2E86AB', 'Away': '#A23B72', 'Draw': '#F18F01'}
 PALETTE = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+
+
+def _to_pandas(obj):
+    if isinstance(obj, pl.DataFrame):
+        return obj.to_pandas()
+    if isinstance(obj, pl.Series):
+        return obj.to_pandas()
+    if isinstance(obj, dict):
+        return {k: _to_pandas(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_pandas(v) for v in obj)
+    return obj
+
 
 def save_figure(fig, filepath: str, dpi: int = 150):
     """Save figure with consistent settings."""
@@ -198,7 +213,17 @@ def plot_adaptation_after_promotion(results: Dict, figures_dir: str = '.', table
 def create_all_new_figures(results_1: Dict, results_2: Dict, results_3: Dict,
                            results_4: Dict, results_5: Dict, results_6: Dict,
                            figures_dir: str = '.', tables_dir: str = None) -> List[str]:
-    """Create all new insight figures."""
+    """Create all new insight figures.
+
+    Polars inputs are converted to pandas at the plotting boundary.
+    """
+    results_1 = _to_pandas(results_1)
+    results_2 = _to_pandas(results_2)
+    results_3 = _to_pandas(results_3)
+    results_4 = _to_pandas(results_4)
+    results_5 = _to_pandas(results_5)
+    results_6 = _to_pandas(results_6)
+
     if tables_dir is None:
         # Default to tables subdirectory alongside figures
         from pathlib import Path

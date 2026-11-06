@@ -14,9 +14,9 @@ quickly and do not slow down the regular unit test suite.
 """
 
 import time
-import pytest
-import pandas as pd
 import numpy as np
+import polars as pl
+import pytest
 from pathlib import Path
 import sys
 
@@ -45,14 +45,12 @@ def small_data():
     team_matches = add_rolling_features(team_matches, window=5, min_periods=3)
     team_matches = add_opponent_strength(team_matches)
     team_season = compute_team_season_metrics(team_matches, min_matches=20)
-    team_season["Corners_PG"] = team_season["Corners"] / team_season["Matches"]
-    team_season["Corners_Ag_PG"] = team_season["Corners_Against"] / team_season["Matches"]
-    team_season["Shots_Per_Corner"] = np.where(
-        team_season["Corners"] > 0, team_season["Shots"] / team_season["Corners"], np.nan
-    )
-    team_season["Goals_Per_Corner"] = np.where(
-        team_season["Corners"] > 0, team_season["GF"] / team_season["Corners"], np.nan
-    )
+    team_season = team_season.with_columns([
+        (pl.col("Corners") / pl.col("Matches")).alias("Corners_PG"),
+        (pl.col("Corners_Against") / pl.col("Matches")).alias("Corners_Ag_PG"),
+        pl.when(pl.col("Corners") > 0).then(pl.col("Shots") / pl.col("Corners")).otherwise(None).alias("Shots_Per_Corner"),
+        pl.when(pl.col("Corners") > 0).then(pl.col("GF") / pl.col("Corners")).otherwise(None).alias("Goals_Per_Corner"),
+    ])
     return master, team_matches, team_season
 
 
@@ -63,16 +61,16 @@ def small_data():
 def test_rolling_first_row_nan(small_data):
     """Rolling features must remain strictly lagged (first match = NaN)."""
     _, team_matches, _ = small_data
-    first = team_matches.groupby(["Div", "Team", "Season"]).head(1)
-    assert first["Points_L5"].isna().all()
-    assert first["Points_Cum"].isna().all()
+    first = team_matches.filter(pl.col("Match_Num") == 1)
+    assert first.select(pl.col("Points_L5").is_null().all()).item()
+    assert first.select(pl.col("Points_Cum").is_null().all()).item()
 
 
 def test_opponent_strength_first_row_nan(small_data):
     """Opponent strength must be NaN for season openers (no prior data)."""
     _, team_matches, _ = small_data
-    first = team_matches.groupby(["Div", "Team", "Season"]).head(1)
-    assert first["Opp_PPG_Cum"].isna().all()
+    first = team_matches.filter(pl.col("Match_Num") == 1)
+    assert first.select(pl.col("Opp_PPG_Cum").is_null().all()).item()
 
 
 def test_zero_denominator_nan(small_data):
@@ -85,7 +83,7 @@ def test_zero_denominator_nan(small_data):
 def test_team_season_min_matches(small_data):
     """team_season must respect the min_matches exposure threshold."""
     _, _, team_season = small_data
-    assert (team_season["Matches"] >= 20).all()
+    assert team_season.select(pl.col("Matches") >= 20).to_series().all()
 
 
 # ---------------------------------------------------------------------------
