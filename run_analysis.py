@@ -152,6 +152,8 @@ def parse_args():
     parser.add_argument('--skip-new', action='store_true', help='Skip new insight analyses (questions 1-6)')
     parser.add_argument('--skip-next', action='store_true', help='Skip next insight analyses (questions 7-11)')
     parser.add_argument('--skip-fresh', action='store_true', help='Skip fresh insight analyses (questions 12-16)')
+    parser.add_argument('--run-predictions', action='store_true',
+                        help='Also run the predictive intelligence engine (see run_predictions.py)')
     parser.add_argument('--reuse-cache', action='store_true',
                         help='Reuse cached Parquet datasets if the source-data and logic fingerprint matches')
     return parser.parse_args()
@@ -643,6 +645,25 @@ def main():
     }
     with open(OUTPUT_DIRS['metadata'] / 'manifest.json', 'w') as f:
         json.dump(manifest, f, indent=2)
+
+    # -----------------------------------------------------------------
+    # Optional: run the predictive intelligence engine.
+    # Default behaviour is unchanged: the original EDA pipeline runs alone.
+    # -----------------------------------------------------------------
+    if args.run_predictions:
+        print("\n" + "=" * 60)
+        print("LAUNCHING PREDICTIVE INTELLIGENCE ENGINE")
+        print("=" * 60)
+        import subprocess
+        pred_cmd = [
+            sys.executable, str(Path(__file__).parent / "run_predictions.py"),
+            "--data-dir", str(DATA_DIR),
+            "--output-dir", str(OUTPUT_DIRS['root'] / "predictions"),
+            "--seed", str(args.seed),
+            "--leagues", *TARGET_LEAGUES,
+            "--seasons", *SEASONS,
+        ]
+        subprocess.run(pred_cmd, check=False)
 
     # -----------------------------------------------------------------
     # 9. VALIDATION & SUMMARY

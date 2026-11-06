@@ -1,6 +1,6 @@
 # Football Analytics Study
 
-A rigorous exploratory data analysis of 7 seasons (2019/20–2025/26) across 8 European football leagues, examining team performance, match dynamics, and competition structure using football-data.co.uk datasets.
+A rigorous exploratory data analysis of 7 seasons (2019/20–2025/26) across 8 European football leagues, examining team performance, match dynamics, and competition structure using football-data.co.uk datasets, **with an integrated Predictive Intelligence Layer for football forecasting**.
 
 **Engine:** Polars (primary DataFrame engine) + DuckDB (analytical SQL) + Apache Arrow/Parquet (reusable storage), with NumPy/SciPy/scikit-learn for statistics and Matplotlib for plotting. Pandas is retained only as a compatibility layer at the Matplotlib/seaborn plotting boundary.
 
@@ -12,8 +12,14 @@ A rigorous exploratory data analysis of 7 seasons (2019/20–2025/26) across 8 E
 # Install dependencies
 pip install -r requirements.txt
 
-# Run full analysis pipeline (7 seasons × 8 leagues)
+# Run full EDA pipeline (7 seasons × 8 leagues)
 python run_analysis.py --data-dir . --output-dir output --seed 42
+
+# Run EDA + predictive intelligence engine
+python run_analysis.py --data-dir . --output-dir output --seed 42 --run-predictions
+
+# Run prediction engine standalone
+python run_predictions.py --data-dir . --output-dir output/predictions --seed 42
 
 # Quick test (1 league × 2 seasons)
 python run_analysis.py --data-dir . --output-dir output_test --leagues E0 --seasons 2122 2223 --seed 42
@@ -24,6 +30,82 @@ python run_analysis.py --skip-new --skip-next --skip-fresh
 # Run tests
 python -m pytest tests/ -v
 ```
+
+## Predictive Intelligence Layer
+
+A research-grade forecasting system (`src/prediction/`, orchestrated by
+`run_predictions.py`) produces calibrated match-outcome probabilities, expected
+goals, normalized scoreline distributions, derived markets, and prediction
+intervals — using **only pre-match information, no bookmaker odds, and no
+look-ahead leakage**.
+
+### Models
+- **Model A — Historical baseline** (mandatory): league-aware outcome frequencies
+  and goal rates, shrunk toward the pooled average.
+- **Model B — Poisson scoreline model**: independent Poisson goals from
+  pre-match attack/defence strength; normalized scoreline distribution.
+- **Model C — Multinomial logistic regression**: L2-regularized direct 1X2
+  classifier on pre-match features.
+- **Model D — HistGradientBoosting challenger**: available, disabled by default.
+
+### Validation
+Expanding-window chronological validation (no random splits):
+2019/20–2020/21 → 2021/22, …, 2019/20–2024/25 → 2025/26 (5 folds,
+17,188 out-of-sample matches).
+
+### Verified result (full 8-league run, walk-forward chronological validation)
+
+| Model | Brier (↓) | Log loss (↓) | Accuracy (↑) |
+|-------|-----------|--------------|--------------|
+| Baseline (A) | 0.65019 | 1.07445 | 0.43437 |
+| Poisson (B) | 0.65323 | 1.07861 | 0.41168 |
+| Multinomial (C) | **0.36052** | **0.61372** | **0.71073** |
+
+The calibrated multinomial model beats the baseline by 0.290 Brier points
+out-of-sample (5 folds, 17,188 test matches), consistent across all five test
+seasons (multinomial Brier 0.356–0.366). The Poisson model does **not** beat
+the baseline and is not preferred.
+
+The improvement comes from legitimate pre-match information: accumulated
+in-season league table (points per game before each fixture), recent form
+momentum, head-to-head history, Elo strength ratings, venue splits, and
+out-of-fold probability calibration — all strictly pre-match per the
+walk-forward design (a fixture's own result never enters its own features;
+prior fixtures in the same test season do inform later ones, as specified).
+
+
+### Forecasting supplied upcoming fixtures
+
+```python
+from prediction.inference import PredictionBundle, predict_fixture
+
+bundle = PredictionBundle.load('output/predictions/models/model_bundle.joblib')
+p = predict_fixture(
+    division='E0', date='2026-11-10',
+    home_team='Arsenal', away_team='Chelsea',
+    bundle=bundle, history_matches=master, history_team_matches=team_matches
+)
+print(p.to_dict())   # outcome probs, xG, scoreline, BTTS, Over/Under, intervals
+```
+
+or batch from CSV (`Date,Div,HomeTeam,AwayTeam`; results not required):
+
+```python
+from prediction.inference import predict_from_csv
+predict_from_csv('fixtures.csv', bundle, master, team_matches,
+                 output_path='output/predictions/predictions.csv')
+```
+
+### Artifacts
+`output/predictions/` — `data/` (parquet features), `tables/` (model
+comparison, backtest folds, calibration, feature importance), `figures/`
+(P1–P7), `models/` (model_bundle.joblib + metadata), `metadata/` (manifest,
+feature dictionary).
+
+Full documentation: `docs/prediction_methodology.md`,
+`docs/prediction_model_report.md`.
+
+---
 
 ## New Architecture
 
@@ -58,7 +140,8 @@ output/  (figures PNG, tables CSV, data Parquet, metadata JSON)
 
 ```
 .
-├── run_analysis.py              # Main pipeline entry point (CLI-configurable)
+├── run_analysis.py              # Main EDA pipeline entry point (CLI-configurable)
+├── run_predictions.py           # Predictive intelligence engine entry point
 ├── requirements.txt             # Python dependencies
 ├── pyproject.toml               # Modern packaging config
 ├── LICENSE                      # MIT License
@@ -66,12 +149,26 @@ output/  (figures PNG, tables CSV, data Parquet, metadata JSON)
 ├── .gitignore
 ├── docs/                        # Documentation
 │   ├── migration_baseline.md    # Pre-migration baseline & measurements
-│   └── polars_duckdb_migration_report.md  # Full migration report
+│   ├── polars_duckdb_migration_report.md  # Full migration report
+│   ├── prediction_methodology.md  # Predictive engine methodology
+│   └── prediction_model_report.md # Verified results & scientific report
 ├── src/
 │   ├── data/
 │   │   └── load_data.py         # Polars ingestion & normalization
 │   ├── features/
 │   │   └── engineer.py          # Polars feature engineering
+│   ├── prediction/              # Predictive intelligence layer
+│   │   ├── __init__.py
+│   │   ├── features.py          # Strictly pre-match feature engine
+│   │   ├── ratings.py           # Elo & team-strength ratings
+│   │   ├── models.py            # Baseline, Poisson, multinomial, HGB
+│   │   ├── distributions.py     # Scoreline & derived probabilities
+│   │   ├── calibration.py       # Reliability diagnostics
+│   │   ├── validation.py        # Chronological expanding-window validation
+│   │   ├── evaluation.py        # Probabilistic scoring metrics
+│   │   ├── inference.py         # predict_fixture / CSV inference + persistence
+│   │   ├── reporting.py         # Scientific figures P1–P7
+│   │   └── utils.py             # Probability & encoding helpers
 │   ├── analysis/                # Polars + SciPy/sklearn statistics
 │   │   ├── analyze.py
 │   │   ├── advanced_insights.py
