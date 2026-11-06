@@ -1,0 +1,120 @@
+Div,Prev_Div,Team,Season,Transition_Type
+E3,E2,AFC Wimbledon,2223,Relegation
+E2,E3,AFC Wimbledon,2526,Promotion
+E3,E2,Accrington,2324,Relegation
+E2,E1,Barnsley,2223,Relegation
+E2,E1,Birmingham,2425,Relegation
+E1,E2,Birmingham,2526,Promotion
+E1,E2,Blackpool,2122,Promotion
+E2,E1,Blackpool,2324,Relegation
+E3,E2,Bolton,2021,Relegation
+E2,E3,Bolton,2122,Promotion
+E1,E0,Bournemouth,2021,Relegation
+E0,E1,Bournemouth,2223,Promotion
+E2,E3,Bradford,2526,Promotion
+E0,E1,Brentford,2122,Promotion
+E3,E2,Bristol Rvs,2122,Relegation
+E2,E3,Bristol Rvs,2223,Promotion
+E3,E2,Bristol Rvs,2526,Relegation
+E1,E0,Burnley,2223,Relegation
+E0,E1,Burnley,2324,Promotion
+E1,E0,Burnley,2425,Relegation
+E0,E1,Burnley,2526,Promotion
+E2,E3,Cambridge,2122,Promotion
+E3,E2,Cambridge,2526,Relegation
+E2,E1,Cardiff,2526,Relegation
+E2,E3,Carlisle,2324,Promotion
+E3,E2,Carlisle,2425,Relegation
+E2,E1,Charlton,2021,Relegation
+E1,E2,Charlton,2526,Promotion
+E2,E3,Cheltenham,2122,Promotion
+E3,E2,Cheltenham,2425,Relegation
+E1,E2,Coventry,2021,Promotion
+E2,E3,Crawley Town,2425,Promotion
+E3,E2,Crawley Town,2526,Relegation
+E2,E3,Crewe,2021,Promotion
+E3,E2,Crewe,2223,Relegation
+E2,E1,Derby,2223,Relegation
+E1,E2,Derby,2425,Promotion
+E3,E2,Doncaster,2223,Relegation
+E2,E3,Doncaster,2526,Promotion
+E2,E3,Exeter,2223,Promotion
+E3,E2,Fleetwood Town,2425,Relegation
+E2,E3,Forest Green,2223,Promotion
+E3,E2,Forest Green,2324,Relegation
+E0,E1,Fulham,2021,Promotion
+E1,E0,Fulham,2122,Relegation
+E0,E1,Fulham,2223,Promotion
+E3,E2,Gillingham,2223,Relegation
+E2,E1,Huddersfield,2425,Relegation
+E2,E1,Hull,2021,Relegation
+E1,E2,Hull,2122,Promotion
+E1,E2,Ipswich,2324,Promotion
+E0,E1,Ipswich,2425,Promotion
+E1,E0,Ipswich,2526,Relegation
+E0,E1,Leeds,2021,Promotion
+E1,E0,Leeds,2324,Relegation
+E0,E1,Leeds,2526,Promotion
+E1,E0,Leicester,2324,Relegation
+E0,E1,Leicester,2425,Promotion
+E1,E0,Leicester,2526,Relegation
+E2,E3,Leyton Orient,2324,Promotion
+E0,E1,Luton,2324,Promotion
+E1,E0,Luton,2425,Relegation
+E2,E1,Luton,2526,Relegation
+E2,E3,Mansfield,2425,Promotion
+E3,E2,Milton Keynes Dons,2324,Relegation
+E2,E3,Morecambe,2122,Promotion
+E3,E2,Morecambe,2324,Relegation
+E2,E3,Northampton,2021,Promotion
+E3,E2,Northampton,2122,Relegation
+E2,E3,Northampton,2324,Promotion
+E1,E0,Norwich,2021,Relegation
+E0,E1,Norwich,2122,Promotion
+E1,E0,Norwich,2223,Relegation
+E0,E1,Nott'm Forest,2223,Promotion
+E1,E2,Oxford,2425,Promotion
+E1,E2,Peterboro,2122,Promotion
+E2,E1,Peterboro,2223,Relegation
+E2,E3,Plymouth,2021,Promotion
+E1,E2,Plymouth,2324,Promotion
+E2,E1,Plymouth,2526,Relegation
+E2,E3,Port Vale,2223,Promotion
+E3,E2,Port Vale,2425,Relegation
+E2,E3,Port Vale,2526,Promotion
+E1,E2,Portsmouth,2425,Promotion
+E2,E1,Reading,2324,Relegation
+E3,E2,Rochdale,2122,Relegation
+E1,E2,Rotherham,2021,Promotion
+E2,E1,Rotherham,2122,Relegation
+E1,E2,Rotherham,2223,Promotion
+E2,E1,Rotherham,2425,Relegation
+E1,E0,Sheffield United,2122,Relegation
+E0,E1,Sheffield United,2324,Promotion
+E1,E0,Sheffield United,2425,Relegation
+E2,E1,Sheffield Weds,2122,Relegation
+E1,E2,Sheffield Weds,2324,Promotion
+E3,E2,Shrewsbury,2526,Relegation
+E1,E0,Southampton,2324,Relegation
+E0,E1,Southampton,2425,Promotion
+E1,E0,Southampton,2526,Relegation
+E3,E2,Southend,2021,Relegation
+E2,E3,Stevenage,2324,Promotion
+E2,E3,Stockport,2425,Promotion
+E1,E2,Sunderland,2223,Promotion
+E0,E1,Sunderland,2526,Promotion
+E2,E3,Swindon,2021,Promotion
+E3,E2,Swindon,2122,Relegation
+E3,E2,Tranmere,2021,Relegation
+E1,E0,Watford,2021,Relegation
+E0,E1,Watford,2122,Promotion
+E1,E0,Watford,2223,Relegation
+E0,E1,West Brom,2021,Promotion
+E1,E0,West Brom,2122,Relegation
+E2,E1,Wigan,2021,Relegation
+E1,E2,Wigan,2223,Promotion
+E2,E1,Wigan,2324,Relegation
+E2,E3,Wrexham,2425,Promotion
+E1,E2,Wrexham,2526,Promotion
+E1,E2,Wycombe,2021,Promotion
+E2,E1,Wycombe,2122,Relegation

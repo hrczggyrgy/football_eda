@@ -1,0 +1,1184 @@
+Div,Team,Season,Observed_Runs_Z,Perm_P_Value,Streaky
+E1,Leicester,2526,0.0,1.0,False
+E2,Accrington,1920,0.0,1.0,False
+SP1,Villarreal,2021,0.0,1.0,False
+SP1,Celta,2122,0.0,1.0,False
+E2,Plymouth,2021,0.0,1.0,False
+E0,Burnley,2526,0.0,1.0,False
+D1,Holstein Kiel,2425,0.0,1.0,False
+I1,Atalanta,2122,0.0,1.0,False
+E3,Newport County,2223,0.0,1.0,False
+I1,Lecce,2526,0.0,1.0,False
+I1,Cagliari,2324,0.0,1.0,False
+I1,Spezia,2021,1.3156725094212403,0.23809523809523808,False
+E0,Sunderland,2526,0.0,1.0,False
+E1,Nott'm Forest,2021,0.0,1.0,False
+D1,Werder Bremen,2324,0.0,1.0,False
+E1,Coventry,2526,0.0,1.0,False
+E1,QPR,2425,0.0,1.0,False
+E2,Oxford,2324,0.0,1.0,False
+D1,Augsburg,2021,0.0,1.0,False
+E1,West Brom,2526,0.0,1.0,False
+F1,Brest,2021,0.0,1.0,False
+E0,West Ham,1920,0.0,1.0,False
+E3,Bradford,2425,0.0,1.0,False
+D1,Dortmund,2526,0.0,1.0,False
+E2,Peterboro,2425,0.0,1.0,False
+I1,Inter,2425,0.0,1.0,False
+E0,Brighton,2425,0.0,1.0,False
+E2,Lincoln,2223,0.0,1.0,False
+E0,Fulham,2425,0.0,1.0,False
+E1,Luton,2122,0.0,1.0,False
+E3,Colchester,2324,-1.1928641587313162,0.2857142857142857,False
+E2,Fleetwood Town,2122,0.0,1.0,False
+E3,Macclesfield,1920,0.0,1.0,False
+E3,Salford,2526,0.0,1.0,False
+SP1,Getafe,2425,0.0,1.0,False
+E1,Plymouth,2324,0.0,1.0,False
+E1,Middlesbrough,1920,0.0,1.0,False
+E2,Mansfield,2526,0.0,1.0,False
+E3,Crawley Town,2021,0.0,1.0,False
+F1,Lens,2122,0.0,1.0,False
+SP1,Betis,2021,0.0,1.0,False
+SP1,Osasuna,2223,0.0,1.0,False
+E1,Norwich,2425,0.0,1.0,False
+E1,Coventry,2021,0.0,1.0,False
+E1,Stoke,2425,0.0,1.0,False
+E0,Chelsea,1920,0.0,1.0,False
+E3,Colchester,1920,0.0,1.0,False
+I1,Juventus,2122,0.0,1.0,False
+E0,Everton,2021,0.0,1.0,False
+E2,Wycombe,2122,0.0,1.0,False
+E1,Watford,2223,0.0,1.0,False
+E0,Sheffield United,2021,0.0,1.0,False
+F1,Marseille,2122,0.0,1.0,False
+I1,Roma,2324,0.0,1.0,False
+F1,Lille,2021,0.0,1.0,False
+I1,Salernitana,2223,0.0,1.0,False
+E1,Derby,2122,0.0,1.0,False
+E2,Barnsley,2526,0.0,1.0,False
+D1,M'gladbach,2324,0.0,1.0,False
+D1,Hertha,2021,0.0,1.0,False
+E1,Birmingham,2324,0.0,1.0,False
+E3,Morecambe,2324,0.0,1.0,False
+E2,Northampton,2021,0.0,1.0,False
+E0,Aston Villa,2425,0.0,1.0,False
+E3,Oldham,1920,0.0,1.0,False
+E3,Swindon,2425,0.0,1.0,False
+E0,Burnley,1920,0.0,1.0,False
+F1,Amiens,1920,0.0,1.0,False
+E3,Bradford,2122,0.0,1.0,False
+E3,Mansfield,2324,0.0,1.0,False
+I1,Genoa,2425,0.0,1.0,False
+D1,Dortmund,1920,0.0,1.0,False
+E0,Tottenham,2122,0.0,1.0,False
+D1,M'gladbach,2223,0.0,1.0,False
+E1,Leeds,2425,0.0,1.0,False
+E3,Bromley,2425,0.0,1.0,False
+F1,St Etienne,2425,0.0,1.0,False
+I1,Sampdoria,2122,0.0,1.0,False
+SP1,Celta,2425,0.0,1.0,False
+D1,Mainz,2223,0.0,1.0,False
+SP1,Barcelona,2021,0.0,1.0,False
+E2,Leyton Orient,2324,0.0,1.0,False
+E0,Newcastle,2223,0.0,1.0,False
+D1,Schalke 04,2223,0.0,1.0,False
+E2,Reading,2425,0.0,1.0,False
+E3,Crewe,2324,0.0,1.0,False
+E1,Stoke,2122,0.0,1.0,False
+E1,Swansea,2425,0.0,1.0,False
+I1,Cremonese,2526,0.0,1.0,False
+F1,Metz,2021,-1.9735087641318605,0.047619047619047616,True
+D1,Leverkusen,2122,0.0,1.0,False
+E3,Colchester,2425,0.0,1.0,False
+E1,Birmingham,2223,0.0,1.0,False
+E2,Oxford,1920,0.0,1.0,False
+SP1,Mallorca,2122,0.0,1.0,False
+E0,Brighton,2526,0.0,1.0,False
+D1,Hoffenheim,2425,0.0,1.0,False
+E1,Fulham,2122,0.0,1.0,False
+E0,Burnley,2324,0.0,1.0,False
+E3,Bradford,1920,0.0,1.0,False
+SP1,Sevilla,2526,0.0,1.0,False
+E3,Bradford,2021,0.0,1.0,False
+E2,Charlton,2324,0.0,1.0,False
+E0,Brentford,2324,0.0,1.0,False
+E0,Newcastle,2425,0.0,1.0,False
+F1,Strasbourg,2223,0.0,1.0,False
+SP1,Getafe,2324,0.0,1.0,False
+E3,Bristol Rvs,2122,0.0,1.0,False
+F1,Metz,2324,0.0,1.0,False
+E1,Southampton,2526,0.0,1.0,False
+E2,Peterboro,2324,0.0,1.0,False
+E3,Port Vale,2021,0.0,1.0,False
+E1,Reading,2122,0.0,1.0,False
+E1,Millwall,1920,0.0,1.0,False
+E2,Peterboro,2526,0.0,1.0,False
+E0,Leeds,2021,0.0,1.0,False
+I1,Milan,2425,0.0,1.0,False
+D1,Bayern Munich,2122,0.0,1.0,False
+SP1,Ath Madrid,2526,0.0,1.0,False
+SP1,Sociedad,2324,0.0,1.0,False
+E1,Preston,1920,0.0,1.0,False
+SP1,Ath Madrid,2425,0.0,1.0,False
+D1,Bochum,2223,0.0,1.0,False
+I1,Fiorentina,2425,0.0,1.0,False
+E1,Portsmouth,2425,0.0,1.0,False
+E2,Milton Keynes Dons,2021,0.0,1.0,False
+SP1,Osasuna,2122,0.0,1.0,False
+E1,Middlesbrough,2122,0.0,1.0,False
+E2,Carlisle,2324,0.0,1.0,False
+F1,Nantes,2425,0.0,1.0,False
+E2,Sunderland,2021,0.0,1.0,False
+E1,Portsmouth,2526,0.0,1.0,False
+E2,Cambridge,2223,0.0,1.0,False
+E2,Port Vale,2223,0.0,1.0,False
+E0,Aston Villa,2122,0.0,1.0,False
+E1,QPR,2021,0.0,1.0,False
+E0,Burnley,2021,-0.6578362547106201,0.5238095238095238,False
+E3,Leyton Orient,2122,0.0,1.0,False
+D1,Mainz,1920,0.0,1.0,False
+D1,Stuttgart,2425,0.0,1.0,False
+E0,Southampton,2425,0.0,1.0,False
+E0,Liverpool,2223,0.0,1.0,False
+E2,Gillingham,1920,0.0,1.0,False
+E0,Man United,2122,0.0,1.0,False
+D1,Leverkusen,2425,0.0,1.0,False
+I1,Lazio,2122,0.0,1.0,False
+SP1,Valladolid,2425,0.0,1.0,False
+E0,Wolves,1920,0.0,1.0,False
+E0,Chelsea,2021,0.0,1.0,False
+E0,Everton,2324,0.0,1.0,False
+E3,Walsall,2425,0.0,1.0,False
+SP1,Barcelona,2223,0.0,1.0,False
+E1,Rotherham,2021,0.0,1.0,False
+E2,Reading,2324,0.0,1.0,False
+D1,FC Koln,1920,0.0,1.0,False
+E1,Wycombe,2021,0.0,1.0,False
+E2,Portsmouth,2324,0.0,1.0,False
+E3,Crewe,2425,0.0,1.0,False
+E0,Norwich,1920,0.0,1.0,False
+F1,Toulouse,2425,0.0,1.0,False
+E2,Cheltenham,2324,0.0,1.0,False
+E1,West Brom,2122,0.0,1.0,False
+D1,FC Koln,2122,0.0,1.0,False
+E0,Man United,1920,0.0,1.0,False
+I1,Salernitana,2122,0.0,1.0,False
+I1,Torino,2021,0.0,1.0,False
+I1,Empoli,2425,0.0,1.0,False
+D1,Hoffenheim,2526,0.0,1.0,False
+E1,Hull,2526,0.0,1.0,False
+E1,Sheffield Weds,2526,0.0,1.0,False
+D1,M'gladbach,2021,0.0,1.0,False
+E3,Carlisle,2122,0.0,1.0,False
+SP1,Sociedad,2223,0.0,1.0,False
+SP1,Real Madrid,1920,0.0,1.0,False
+E0,Brentford,2223,0.0,1.0,False
+E0,Tottenham,1920,0.0,1.0,False
+SP1,Ath Madrid,2122,0.0,1.0,False
+SP1,Levante,2122,0.0,1.0,False
+E1,Coventry,2324,0.0,1.0,False
+E1,Middlesbrough,2526,0.0,1.0,False
+E2,Morecambe,2122,0.0,1.0,False
+E2,Rochdale,2021,0.0,1.0,False
+E3,Bromley,2526,0.0,1.0,False
+D1,Freiburg,2122,0.0,1.0,False
+SP1,Barcelona,2526,0.0,1.0,False
+E1,Bournemouth,2021,0.0,1.0,False
+F1,Rennes,2526,0.0,1.0,False
+E2,Charlton,2223,0.0,1.0,False
+I1,Cagliari,2526,0.0,1.0,False
+F1,Monaco,2021,0.0,1.0,False
+E1,Coventry,2122,0.0,1.0,False
+F1,Rennes,2122,0.0,1.0,False
+D1,Ein Frankfurt,1920,0.0,1.0,False
+SP1,Vallecano,2324,0.0,1.0,False
+E2,Peterboro,1920,0.0,1.0,False
+I1,Napoli,1920,0.0,1.0,False
+SP1,Girona,2324,0.0,1.0,False
+E3,Chesterfield,2526,0.0,1.0,False
+E3,Forest Green,2021,0.0,1.0,False
+SP1,Betis,2324,0.0,1.0,False
+E0,West Ham,2425,0.0,1.0,False
+E2,Wycombe,1920,0.0,1.0,False
+E1,Leeds,2324,0.0,1.0,False
+E3,Rochdale,2122,0.0,1.0,False
+E1,Norwich,2223,0.0,1.0,False
+F1,Bordeaux,2122,0.0,1.0,False
+E0,Southampton,2122,0.0,1.0,False
+D1,Stuttgart,2021,0.0,1.0,False
+E0,Tottenham,2324,0.0,1.0,False
+D1,RB Leipzig,1920,0.0,1.0,False
+E2,Rochdale,1920,0.0,1.0,False
+E3,Scunthorpe,1920,0.0,1.0,False
+D1,Ein Frankfurt,2526,0.0,1.0,False
+I1,Parma,2021,0.0,1.0,False
+E2,Blackpool,2425,0.0,1.0,False
+E1,Reading,2223,0.0,1.0,False
+E0,Man United,2324,0.0,1.0,False
+F1,Rennes,2425,0.0,1.0,False
+E0,Luton,2324,0.0,1.0,False
+E2,Coventry,1920,0.0,1.0,False
+I1,Cagliari,1920,0.0,1.0,False
+E0,Brentford,2526,0.0,1.0,False
+E0,Arsenal,2324,0.0,1.0,False
+E2,Blackpool,2324,0.0,1.0,False
+E3,Milton Keynes Dons,2425,0.0,1.0,False
+E3,Northampton,2122,0.0,1.0,False
+I1,Frosinone,2324,0.0,1.0,False
+SP1,Sevilla,1920,0.0,1.0,False
+D1,Mainz,2425,0.0,1.0,False
+D1,RB Leipzig,2526,0.0,1.0,False
+E3,Tranmere,2021,0.0,1.0,False
+E2,AFC Wimbledon,2526,0.0,1.0,False
+E3,Port Vale,2122,0.0,1.0,False
+E1,Middlesbrough,2021,0.0,1.0,False
+SP1,Barcelona,2324,0.0,1.0,False
+SP1,Leganes,2425,0.0,1.0,False
+SP1,Granada,1920,0.0,1.0,False
+F1,Ajaccio,2223,0.0,1.0,False
+I1,Crotone,2021,0.0,1.0,False
+E2,Bolton,1920,0.0,1.0,False
+E1,Barnsley,1920,0.0,1.0,False
+F1,Rennes,1920,0.0,1.0,False
+D1,Augsburg,2122,0.0,1.0,False
+E0,Wolves,2324,0.0,1.0,False
+E3,Colchester,2526,0.0,1.0,False
+SP1,Villarreal,2425,0.0,1.0,False
+D1,Augsburg,2425,0.0,1.0,False
+E0,Southampton,2021,0.0,1.0,False
+SP1,Villarreal,2122,0.0,1.0,False
+E0,Crystal Palace,2526,0.0,1.0,False
+E1,West Brom,2425,0.0,1.0,False
+SP1,Levante,2021,0.0,1.0,False
+E1,Derby,1920,0.0,1.0,False
+E1,Luton,2425,0.0,1.0,False
+E3,Bradford,2324,0.0,1.0,False
+D1,Union Berlin,2021,0.0,1.0,False
+SP1,Espanol,2122,0.0,1.0,False
+SP1,Sevilla,2223,0.0,1.0,False
+SP1,Valencia,2122,0.0,1.0,False
+E3,Walsall,2324,0.0,1.0,False
+F1,Nantes,1920,0.0,1.0,False
+D1,Hertha,2122,0.0,1.0,False
+E3,Doncaster,2223,0.0,1.0,False
+E2,Ipswich,1920,0.0,1.0,False
+E1,Peterboro,2122,0.0,1.0,False
+SP1,Real Madrid,2223,0.0,1.0,False
+F1,Toulouse,2324,0.0,1.0,False
+E0,Brentford,2122,0.0,1.0,False
+E2,Lincoln,1920,0.0,1.0,False
+E1,Swansea,2122,0.0,1.0,False
+SP1,Betis,2526,0.0,1.0,False
+D1,Bayern Munich,2223,0.0,1.0,False
+D1,FC Koln,2223,0.0,1.0,False
+E1,Millwall,2021,0.0,1.0,False
+E3,AFC Wimbledon,2223,0.0,1.0,False
+SP1,Elche,2021,0.7354576915167437,0.6190476190476191,False
+E3,Barrow,2324,0.0,1.0,False
+E3,Swindon,2223,0.0,1.0,False
+E3,Scunthorpe,2021,0.0,1.0,False
+F1,Bordeaux,2021,0.0,1.0,False
+I1,Empoli,2223,0.0,1.0,False
+SP1,Espanol,1920,0.0,1.0,False
+I1,Benevento,2021,0.32891812735531006,0.8095238095238095,False
+D1,Bayern Munich,2324,0.0,1.0,False
+D1,Bielefeld,2122,0.0,1.0,False
+E1,Sunderland,2425,0.0,1.0,False
+I1,Atalanta,2324,0.0,1.0,False
+E0,Everton,2526,0.0,1.0,False
+E1,West Brom,2324,0.0,1.0,False
+D1,Stuttgart,2122,0.0,1.0,False
+F1,Clermont,2223,0.0,1.0,False
+F1,Montpellier,2425,0.0,1.0,False
+E0,Man City,2425,0.0,1.0,False
+I1,Lecce,2425,0.0,1.0,False
+E0,Bournemouth,1920,0.0,1.0,False
+E2,Lincoln,2021,0.0,1.0,False
+SP1,Real Madrid,2526,0.0,1.0,False
+E0,Aston Villa,1920,0.0,1.0,False
+E1,Bristol City,2021,0.0,1.0,False
+E3,Bolton,2021,0.0,1.0,False
+I1,Torino,2122,0.0,1.0,False
+SP1,Cadiz,2021,0.0,1.0,False
+E2,Bolton,2526,0.0,1.0,False
+I1,Venezia,2122,0.0,1.0,False
+E2,Oxford,2122,0.0,1.0,False
+SP1,Ath Bilbao,1920,0.0,1.0,False
+E1,Hull,1920,0.0,1.0,False
+E2,Plymouth,2122,0.0,1.0,False
+D1,Heidenheim,2425,0.0,1.0,False
+D1,FC Koln,2526,0.0,1.0,False
+E3,Port Vale,1920,0.0,1.0,False
+SP1,Valladolid,2223,0.0,1.0,False
+E1,Bristol City,1920,0.0,1.0,False
+SP1,Celta,2223,0.0,1.0,False
+SP1,Ath Bilbao,2122,0.0,1.0,False
+E0,Aston Villa,2526,0.0,1.0,False
+F1,Marseille,2425,0.0,1.0,False
+F1,Monaco,2526,0.0,1.0,False
+F1,Paris SG,2021,0.0,1.0,False
+E1,Nott'm Forest,1920,0.0,1.0,False
+F1,Strasbourg,2425,0.0,1.0,False
+I1,Verona,2223,0.0,1.0,False
+F1,Bordeaux,1920,0.0,1.0,False
+SP1,Sociedad,2425,0.0,1.0,False
+D1,FC Koln,2021,0.0,1.0,False
+E2,Portsmouth,2021,0.0,1.0,False
+F1,Brest,1920,0.0,1.0,False
+I1,Roma,1920,0.0,1.0,False
+E2,Shrewsbury,2122,0.0,1.0,False
+E1,Cardiff,2122,0.0,1.0,False
+D1,Bochum,2122,0.0,1.0,False
+E2,Burton,2526,0.0,1.0,False
+I1,Sassuolo,2324,0.0,1.0,False
+F1,Strasbourg,2122,0.0,1.0,False
+E1,Oxford,2526,0.0,1.0,False
+E2,Sunderland,1920,0.0,1.0,False
+E3,Barnet,2526,0.0,1.0,False
+E3,Crawley Town,1920,0.0,1.0,False
+E3,Mansfield,2223,0.0,1.0,False
+I1,Spezia,2223,0.0,1.0,False
+F1,Lille,2324,0.0,1.0,False
+E2,Derby,2324,0.0,1.0,False
+I1,Udinese,1920,0.0,1.0,False
+SP1,Ath Bilbao,2425,0.0,1.0,False
+SP1,Villarreal,2526,0.0,1.0,False
+I1,Inter,1920,0.0,1.0,False
+F1,Paris SG,2526,0.0,1.0,False
+I1,Roma,2223,0.0,1.0,False
+D1,Hoffenheim,2021,0.0,1.0,False
+E1,Bristol City,2526,0.0,1.0,False
+E1,Bristol City,2324,0.0,1.0,False
+I1,Napoli,2122,0.0,1.0,False
+SP1,Barcelona,2122,0.0,1.0,False
+I1,Pisa,2526,0.0,1.0,False
+I1,Sassuolo,2526,0.0,1.0,False
+E3,Walsall,2021,0.0,1.0,False
+E2,Gillingham,2021,0.0,1.0,False
+SP1,Sociedad,2021,0.0,1.0,False
+E2,Cambridge,2122,0.0,1.0,False
+E0,Everton,1920,0.0,1.0,False
+D1,Werder Bremen,2223,0.0,1.0,False
+E0,Nott'm Forest,2526,0.0,1.0,False
+E1,Sheffield United,2223,0.0,1.0,False
+F1,Nice,2021,0.0,1.0,False
+D1,Hoffenheim,2324,0.0,1.0,False
+E2,Bolton,2223,0.0,1.0,False
+SP1,Elche,2223,0.0,1.0,False
+E1,Nott'm Forest,2122,0.0,1.0,False
+E2,Blackpool,2021,0.0,1.0,False
+E1,Hull,2324,0.0,1.0,False
+SP1,Vallecano,2425,0.0,1.0,False
+E0,Newcastle,2021,0.0,1.0,False
+E0,Sheffield United,1920,0.0,1.0,False
+E1,Preston,2526,0.0,1.0,False
+E3,Carlisle,2223,0.0,1.0,False
+E1,Derby,2425,0.0,1.0,False
+F1,Strasbourg,2021,0.0,1.0,False
+I1,Milan,2526,0.0,1.0,False
+I1,Lazio,2223,0.0,1.0,False
+F1,Brest,2223,0.0,1.0,False
+E1,Bristol City,2425,0.0,1.0,False
+F1,Rennes,2021,0.0,1.0,False
+E0,West Ham,2122,0.0,1.0,False
+E2,Doncaster,2021,0.0,1.0,False
+E3,Mansfield,1920,0.0,1.0,False
+E3,Crawley Town,2223,0.0,1.0,False
+F1,Reims,2223,0.0,1.0,False
+E2,Northampton,2324,0.0,1.0,False
+SP1,Getafe,2021,1.6445906367765504,0.14285714285714285,False
+D1,Dortmund,2021,0.0,1.0,False
+I1,Lecce,2223,0.0,1.0,False
+E2,Lincoln,2425,0.0,1.0,False
+E3,Newport County,2122,0.0,1.0,False
+E0,Brighton,2223,0.0,1.0,False
+F1,Lille,2122,0.0,1.0,False
+SP1,Celta,2526,0.0,1.0,False
+E3,Stockport,2223,0.0,1.0,False
+D1,Stuttgart,2223,0.0,1.0,False
+E2,Forest Green,2223,0.0,1.0,False
+E3,Morecambe,2021,0.0,1.0,False
+D1,Dortmund,2324,0.0,1.0,False
+SP1,Celta,2021,0.0,1.0,False
+E0,Aston Villa,2021,1.6445906367765504,0.14285714285714285,False
+E0,Fulham,2021,0.0,1.0,False
+I1,Salernitana,2324,0.0,1.0,False
+E0,Southampton,2223,0.0,1.0,False
+E2,Rotherham,1920,0.0,1.0,False
+SP1,Alaves,2425,0.0,1.0,False
+SP1,Las Palmas,2324,0.0,1.0,False
+SP1,Almeria,2223,0.0,1.0,False
+I1,Napoli,2425,0.0,1.0,False
+F1,Nice,2122,0.0,1.0,False
+D1,Leverkusen,1920,0.0,1.0,False
+D1,Wolfsburg,2526,0.0,1.0,False
+F1,Toulouse,2526,0.0,1.0,False
+E3,Oldham,2021,0.0,1.0,False
+SP1,Getafe,1920,0.0,1.0,False
+F1,Nantes,2223,0.0,1.0,False
+E3,Carlisle,2021,0.0,1.0,False
+E1,Blackburn,2021,0.0,1.0,False
+E3,Northampton,1920,0.0,1.0,False
+E2,Rotherham,2122,0.0,1.0,False
+I1,Sassuolo,1920,0.0,1.0,False
+I1,Torino,2425,0.0,1.0,False
+D1,RB Leipzig,2425,0.0,1.0,False
+E0,Chelsea,2324,0.0,1.0,False
+E1,Norwich,2021,0.0,1.0,False
+E3,Salford,1920,0.0,1.0,False
+D1,Wolfsburg,2223,0.0,1.0,False
+E2,Burton,2021,0.0,1.0,False
+F1,St Etienne,2021,-0.6578362547106201,0.7142857142857143,False
+SP1,Valencia,2526,0.0,1.0,False
+D1,Union Berlin,2223,0.0,1.0,False
+E0,Everton,2122,0.0,1.0,False
+E2,Blackpool,1920,0.0,1.0,False
+E0,Arsenal,1920,0.0,1.0,False
+I1,Genoa,2122,0.0,1.0,False
+E3,Sutton,2324,0.0,1.0,False
+I1,Juventus,1920,0.0,1.0,False
+SP1,Levante,1920,0.0,1.0,False
+SP1,Sociedad,2122,0.0,1.0,False
+D1,M'gladbach,1920,0.0,1.0,False
+E0,Man City,1920,0.0,1.0,False
+E0,Man City,2122,0.0,1.0,False
+E2,Shrewsbury,2021,0.0,1.0,False
+F1,Rennes,2223,0.0,1.0,False
+I1,Juventus,2324,0.0,1.0,False
+E1,Birmingham,2122,0.0,1.0,False
+I1,Roma,2425,0.0,1.0,False
+E0,Leicester,1920,0.0,1.0,False
+SP1,Espanol,2425,0.0,1.0,False
+E1,Sheffield Weds,1920,0.0,1.0,False
+D1,Augsburg,1920,0.0,1.0,False
+E1,Brentford,2021,0.0,1.0,False
+E1,Plymouth,2425,0.0,1.0,False
+E2,Cambridge,2324,0.0,1.0,False
+E3,Accrington,2526,0.0,1.0,False
+F1,Lille,2425,0.0,1.0,False
+I1,Lazio,1920,0.0,1.0,False
+E0,West Brom,2021,0.0,1.0,False
+F1,Monaco,2425,0.0,1.0,False
+I1,Torino,2526,0.0,1.0,False
+SP1,Osasuna,2021,0.0,1.0,False
+E1,Hull,2122,0.0,1.0,False
+F1,Lorient,2122,0.0,1.0,False
+SP1,Levante,2526,0.0,1.0,False
+E1,Watford,2425,0.0,1.0,False
+D1,Hoffenheim,1920,0.0,1.0,False
+E2,Accrington,2122,0.0,1.0,False
+D1,Dortmund,2122,0.0,1.0,False
+E3,Newport County,2324,0.0,1.0,False
+E0,West Ham,2021,0.0,1.0,False
+SP1,Ath Bilbao,2021,0.0,1.0,False
+E2,Bristol Rvs,1920,0.0,1.0,False
+E3,Colchester,2122,0.0,1.0,False
+F1,Metz,2122,0.0,1.0,False
+E2,Shrewsbury,2223,0.0,1.0,False
+D1,Heidenheim,2526,0.0,1.0,False
+E1,Watford,2324,0.0,1.0,False
+E2,Accrington,2021,0.0,1.0,False
+F1,Reims,2425,0.0,1.0,False
+I1,Spal,1920,0.0,1.0,False
+E1,Huddersfield,1920,0.0,1.0,False
+E2,Bolton,2324,0.0,1.0,False
+F1,Lorient,2021,0.0,1.0,False
+E2,Lincoln,2122,0.0,1.0,False
+E1,Preston,2021,0.0,1.0,False
+D1,Leverkusen,2526,0.0,1.0,False
+D1,Dortmund,2223,0.0,1.0,False
+F1,Clermont,2122,0.0,1.0,False
+F1,Nice,2324,0.0,1.0,False
+E2,Ipswich,2223,0.0,1.0,False
+D1,Hamburg,2526,0.0,1.0,False
+F1,Brest,2122,0.0,1.0,False
+SP1,Sociedad,1920,0.0,1.0,False
+E0,Brighton,2324,0.0,1.0,False
+F1,Monaco,2122,0.0,1.0,False
+D1,Bayern Munich,2526,0.0,1.0,False
+SP1,Ath Madrid,2223,0.0,1.0,False
+E1,Huddersfield,2122,0.0,1.0,False
+E1,Barnsley,2122,0.0,1.0,False
+E1,QPR,2223,0.0,1.0,False
+E1,Millwall,2324,0.0,1.0,False
+I1,Lazio,2425,0.0,1.0,False
+SP1,Vallecano,2223,0.0,1.0,False
+D1,Leverkusen,2223,0.0,1.0,False
+E0,Wolves,2425,0.0,1.0,False
+SP1,Almeria,2324,0.0,1.0,False
+E3,Barrow,2526,0.0,1.0,False
+SP1,Villarreal,1920,0.0,1.0,False
+E2,Charlton,2021,0.0,1.0,False
+E3,Grimsby,2021,0.0,1.0,False
+F1,Paris SG,2425,0.0,1.0,False
+E0,Leeds,2223,0.0,1.0,False
+E3,Harrogate,2425,0.0,1.0,False
+F1,Metz,1920,0.0,1.0,False
+E1,Hull,2425,0.0,1.0,False
+E0,Watford,1920,0.0,1.0,False
+E2,Wigan,2122,0.0,1.0,False
+E3,Harrogate,2324,0.0,1.0,False
+E3,Mansfield,2122,0.0,1.0,False
+E2,Port Vale,2526,0.0,1.0,False
+E3,Crawley Town,2526,0.0,1.0,False
+E3,Fleetwood Town,2526,0.0,1.0,False
+E1,Stoke,2324,0.0,1.0,False
+E0,Crystal Palace,2324,0.0,1.0,False
+E2,Bristol Rvs,2223,0.0,1.0,False
+E0,West Ham,2223,0.0,1.0,False
+E2,Leyton Orient,2526,0.0,1.0,False
+E2,Lincoln,2526,0.0,1.0,False
+E2,Morecambe,2223,0.0,1.0,False
+E2,Sheffield Weds,2122,0.0,1.0,False
+E2,Swindon,2021,0.0,1.0,False
+E3,Milton Keynes Dons,2526,0.0,1.0,False
+F1,Marseille,2021,0.6578362547106201,0.7142857142857143,False
+E1,Preston,2425,0.0,1.0,False
+E3,Milton Keynes Dons,2324,0.0,1.0,False
+SP1,Leganes,1920,0.0,1.0,False
+E2,Accrington,2223,0.0,1.0,False
+SP1,Real Madrid,2122,0.0,1.0,False
+E2,Wycombe,2324,0.0,1.0,False
+D1,Hoffenheim,2122,0.0,1.0,False
+E2,Wycombe,2425,0.0,1.0,False
+SP1,Girona,2526,0.0,1.0,False
+D1,St Pauli,2425,0.0,1.0,False
+F1,Paris SG,1920,0.0,1.0,False
+SP1,Alaves,2021,0.0,1.0,False
+E1,Sheffield Weds,2021,0.0,1.0,False
+E2,Milton Keynes Dons,2122,0.0,1.0,False
+E2,AFC Wimbledon,1920,0.0,1.0,False
+D1,M'gladbach,2122,0.0,1.0,False
+I1,Napoli,2526,0.0,1.0,False
+E2,Stevenage,2324,0.0,1.0,False
+I1,Fiorentina,2324,0.0,1.0,False
+E0,Man United,2021,1.3156725094212403,0.23809523809523808,False
+F1,Nice,2526,0.0,1.0,False
+E2,Stevenage,2425,0.0,1.0,False
+E1,Bristol City,2223,0.0,1.0,False
+E0,Liverpool,2526,0.0,1.0,False
+E0,Fulham,2526,0.0,1.0,False
+E0,Leicester,2223,0.0,1.0,False
+I1,Lazio,2021,-0.6578362547106201,0.47619047619047616,False
+E0,Nott'm Forest,2425,0.0,1.0,False
+E3,Gillingham,2324,0.0,1.0,False
+E1,Millwall,2526,0.0,1.0,False
+SP1,Betis,2425,0.0,1.0,False
+E2,Fleetwood Town,1920,0.0,1.0,False
+SP1,Betis,2122,0.0,1.0,False
+F1,Paris SG,2122,0.0,1.0,False
+I1,Verona,2324,0.0,1.0,False
+I1,Empoli,2324,0.0,1.0,False
+D1,St Pauli,2526,0.0,1.0,False
+E1,Rotherham,2324,0.0,1.0,False
+E2,Sunderland,2122,0.0,1.0,False
+E3,Accrington,2425,0.0,1.0,False
+I1,Inter,2324,0.0,1.0,False
+E3,Barrow,2021,0.0,1.0,False
+I1,Bologna,2223,0.0,1.0,False
+E0,Wolves,2223,0.0,1.0,False
+E3,Cambridge,1920,0.0,1.0,False
+D1,Schalke 04,2021,0.0,1.0,False
+E0,Bournemouth,2425,0.0,1.0,False
+E1,Watford,2021,0.0,1.0,False
+E1,Norwich,2324,0.0,1.0,False
+E1,Ipswich,2526,0.0,1.0,False
+E0,Nott'm Forest,2324,0.0,1.0,False
+E1,West Brom,2223,0.0,1.0,False
+I1,Lazio,2526,0.0,1.0,False
+E3,Gillingham,2526,0.0,1.0,False
+F1,Nice,2425,0.0,1.0,False
+E2,Burton,2425,0.0,1.0,False
+E3,Carlisle,2425,0.0,1.0,False
+E2,Burton,2223,0.0,1.0,False
+F1,Clermont,2324,0.0,1.0,False
+F1,St Etienne,1920,0.0,1.0,False
+I1,Sampdoria,1920,0.0,1.0,False
+E3,Crawley Town,2122,0.0,1.0,False
+E2,Bradford,2526,0.0,1.0,False
+E2,Crawley Town,2425,0.0,1.0,False
+F1,Paris SG,2324,0.0,1.0,False
+E2,Northampton,2425,0.0,1.0,False
+E1,Cardiff,2021,0.0,1.0,False
+E3,Wrexham,2324,0.0,1.0,False
+F1,Brest,2526,0.0,1.0,False
+F1,Le Havre,2526,0.0,1.0,False
+E0,Man City,2021,-0.32891812735531006,0.9523809523809523,False
+E2,Huddersfield,2425,0.0,1.0,False
+D1,Mainz,2021,0.0,1.0,False
+E2,Stevenage,2526,0.0,1.0,False
+I1,Milan,2021,0.0,1.0,False
+SP1,Alaves,2122,0.0,1.0,False
+SP1,Huesca,2021,0.0,1.0,False
+E3,Hartlepool,2122,0.0,1.0,False
+E2,Reading,2526,0.0,1.0,False
+E0,Man United,2425,0.0,1.0,False
+E3,Salford,2425,0.0,1.0,False
+F1,Monaco,2223,0.0,1.0,False
+SP1,Osasuna,1920,0.0,1.0,False
+I1,Parma,2425,0.0,1.0,False
+E1,Stoke,2223,0.0,1.0,False
+I1,Cagliari,2425,0.0,1.0,False
+E3,Crewe,1920,0.0,1.0,False
+F1,Auxerre,2526,0.0,1.0,False
+I1,Torino,1920,0.0,1.0,False
+E2,Exeter,2223,0.0,1.0,False
+F1,Montpellier,2122,0.0,1.0,False
+E1,Millwall,2425,0.0,1.0,False
+E2,Cheltenham,2223,0.0,1.0,False
+D1,Wolfsburg,1920,0.0,1.0,False
+E3,Fleetwood Town,2425,0.0,1.0,False
+E3,Harrogate,2122,0.0,1.0,False
+E0,Bournemouth,2526,0.0,1.0,False
+E1,Rotherham,2223,0.0,1.0,False
+E2,Doncaster,1920,0.0,1.0,False
+F1,Rennes,2324,0.0,1.0,False
+F1,Nice,2223,0.0,1.0,False
+D1,Wolfsburg,2324,0.0,1.0,False
+F1,Metz,2526,0.0,1.0,False
+I1,Atalanta,2526,0.0,1.0,False
+E1,Preston,2324,0.0,1.0,False
+SP1,Mallorca,1920,0.0,1.0,False
+E1,Wigan,2223,0.0,1.0,False
+SP1,Sevilla,2425,0.0,1.0,False
+F1,Montpellier,2324,0.0,1.0,False
+I1,Verona,2122,0.0,1.0,False
+SP1,Real Madrid,2425,0.0,1.0,False
+F1,Nantes,2122,0.0,1.0,False
+E3,Cambridge,2021,0.0,1.0,False
+E0,Man City,2223,0.0,1.0,False
+I1,Juventus,2425,0.0,1.0,False
+E2,Peterboro,2021,0.0,1.0,False
+E0,Liverpool,2122,0.0,1.0,False
+E3,Gillingham,2425,0.0,1.0,False
+E1,Huddersfield,2021,0.0,1.0,False
+I1,Cagliari,2122,0.0,1.0,False
+E0,Southampton,1920,0.0,1.0,False
+E2,Fleetwood Town,2021,0.0,1.0,False
+E3,Swindon,1920,0.0,1.0,False
+D1,Mainz,2122,0.0,1.0,False
+E0,Man United,2223,0.0,1.0,False
+E3,Leyton Orient,1920,0.0,1.0,False
+E3,Tranmere,2223,0.0,1.0,False
+F1,Marseille,2223,0.0,1.0,False
+I1,Torino,2223,0.0,1.0,False
+I1,Parma,1920,0.0,1.0,False
+E1,Cardiff,1920,0.0,1.0,False
+SP1,Ath Bilbao,2324,0.0,1.0,False
+F1,Toulouse,1920,0.0,1.0,False
+D1,Hertha,1920,0.0,1.0,False
+E3,Colchester,2021,0.0,1.0,False
+SP1,Valencia,2324,0.0,1.0,False
+E0,Norwich,2122,0.0,1.0,False
+SP1,Elche,2526,0.0,1.0,False
+E1,Leicester,2324,0.0,1.0,False
+E3,Newport County,2021,0.0,1.0,False
+I1,Napoli,2324,0.0,1.0,False
+E3,Harrogate,2021,0.0,1.0,False
+E1,Swansea,2223,0.0,1.0,False
+E2,Cardiff,2526,0.0,1.0,False
+F1,Lorient,2526,0.0,1.0,False
+SP1,Ath Madrid,2324,0.0,1.0,False
+E1,Blackburn,2526,0.0,1.0,False
+E2,Shrewsbury,1920,0.0,1.0,False
+I1,Sassuolo,2223,0.0,1.0,False
+D1,Freiburg,2425,0.0,1.0,False
+E3,Exeter,2021,0.0,1.0,False
+E0,Watford,2122,0.0,1.0,False
+E0,Brentford,2425,0.0,1.0,False
+F1,Lyon,2324,0.0,1.0,False
+SP1,Osasuna,2324,0.0,1.0,False
+E3,Leyton Orient,2021,0.0,1.0,False
+F1,Lyon,2526,0.0,1.0,False
+E1,Derby,2526,0.0,1.0,False
+E3,Bristol Rvs,2526,0.0,1.0,False
+E2,Barnsley,2223,0.0,1.0,False
+F1,Montpellier,1920,0.0,1.0,False
+SP1,Barcelona,1920,0.0,1.0,False
+E2,Wigan,2324,0.0,1.0,False
+E2,Crewe,2021,0.0,1.0,False
+D1,Bayern Munich,1920,0.0,1.0,False
+F1,Angers,2223,0.0,1.0,False
+E3,Exeter,1920,0.0,1.0,False
+D1,Leverkusen,2324,0.0,1.0,False
+E0,Arsenal,2021,0.0,1.0,False
+E1,Sunderland,2324,0.0,1.0,False
+E3,Cambridge,2526,0.0,1.0,False
+E2,Plymouth,2526,0.0,1.0,False
+E3,Colchester,2223,0.0,1.0,False
+D1,Wolfsburg,2021,0.0,1.0,False
+SP1,Barcelona,2425,0.0,1.0,False
+F1,Nice,1920,0.0,1.0,False
+SP1,Sevilla,2021,1.00693263271013,0.23809523809523808,False
+D1,Leverkusen,2021,0.0,1.0,False
+I1,Juventus,2223,0.0,1.0,False
+F1,Strasbourg,1920,0.0,1.0,False
+E3,Scunthorpe,2122,0.0,1.0,False
+E1,Blackpool,2122,0.0,1.0,False
+F1,Paris SG,2223,0.0,1.0,False
+E2,Fleetwood Town,2223,0.0,1.0,False
+F1,Reims,2021,0.0,1.0,False
+F1,Nantes,2021,0.0,1.0,False
+F1,Brest,2324,0.0,1.0,False
+D1,Ein Frankfurt,2122,0.0,1.0,False
+E3,Salford,2223,0.0,1.0,False
+SP1,Getafe,2223,0.0,1.0,False
+I1,Fiorentina,2223,0.0,1.0,False
+E1,Oxford,2425,0.0,1.0,False
+E3,Stockport,2324,0.0,1.0,False
+E3,Walsall,2122,0.0,1.0,False
+SP1,Sevilla,2122,0.0,1.0,False
+E3,Chesterfield,2425,0.0,1.0,False
+F1,Monaco,2324,0.0,1.0,False
+E3,Barrow,2122,0.0,1.0,False
+E2,AFC Wimbledon,2122,0.0,1.0,False
+E3,Gillingham,2223,0.0,1.0,False
+F1,Lens,2021,0.0,1.0,False
+E3,Forest Green,1920,0.0,1.0,False
+E1,Norwich,2526,0.0,1.0,False
+SP1,Getafe,2122,0.0,1.0,False
+E0,Sheffield United,2324,0.0,1.0,False
+E3,Swindon,2122,0.0,1.0,False
+D1,M'gladbach,2425,0.0,1.0,False
+D1,Darmstadt,2324,0.0,1.0,False
+E0,Crystal Palace,2021,0.0,1.0,False
+E0,Leicester,2021,0.0,1.0,False
+E3,Harrogate,2526,0.0,1.0,False
+E3,Harrogate,2223,0.0,1.0,False
+E1,Blackburn,2324,0.0,1.0,False
+I1,Udinese,2526,0.0,1.0,False
+SP1,Ath Madrid,2021,-1.9735087641318605,0.047619047619047616,True
+E3,Grimsby,2324,0.0,1.0,False
+F1,Dijon,1920,0.0,1.0,False
+E3,Oldham,2122,0.0,1.0,False
+I1,Genoa,2526,0.0,1.0,False
+I1,Bologna,2526,0.0,1.0,False
+E3,Grimsby,1920,0.0,1.0,False
+E1,Blackburn,1920,0.0,1.0,False
+E1,Bristol City,2122,0.0,1.0,False
+F1,Lens,2324,0.0,1.0,False
+I1,Roma,2122,0.0,1.0,False
+E1,Luton,1920,0.0,1.0,False
+E1,West Brom,1920,0.0,1.0,False
+SP1,Cadiz,2122,0.0,1.0,False
+E1,Sheffield United,2526,0.0,1.0,False
+E3,Cheltenham,2021,0.0,1.0,False
+E3,Walsall,2223,0.0,1.0,False
+D1,Werder Bremen,2021,0.0,1.0,False
+I1,Brescia,1920,0.0,1.0,False
+I1,Atalanta,1920,0.0,1.0,False
+F1,Lille,1920,0.0,1.0,False
+E1,Brentford,1920,0.0,1.0,False
+F1,Troyes,2122,0.0,1.0,False
+E3,Sutton,2122,0.0,1.0,False
+E1,Middlesbrough,2324,0.0,1.0,False
+I1,Lecce,2324,0.0,1.0,False
+E1,Huddersfield,2324,0.0,1.0,False
+F1,Reims,1920,0.0,1.0,False
+E0,Newcastle,1920,0.0,1.0,False
+F1,Nantes,2526,0.0,1.0,False
+E2,Barnsley,2324,0.0,1.0,False
+I1,Atalanta,2021,-0.32891812735531006,0.8095238095238095,False
+E0,Man United,2526,0.0,1.0,False
+I1,Verona,1920,0.0,1.0,False
+SP1,Vallecano,2122,0.0,1.0,False
+E2,Rotherham,2425,0.0,1.0,False
+D1,Fortuna Dusseldorf,1920,0.0,1.0,False
+F1,Strasbourg,2324,0.0,1.0,False
+E3,Tranmere,2122,0.0,1.0,False
+E0,Man City,2324,0.0,1.0,False
+E0,Ipswich,2425,0.0,1.0,False
+E1,Cardiff,2425,0.0,1.0,False
+E3,Notts County,2324,0.0,1.0,False
+F1,Lorient,2223,0.0,1.0,False
+E3,Tranmere,2324,0.0,1.0,False
+E0,Newcastle,2122,0.0,1.0,False
+D1,Stuttgart,2324,0.0,1.0,False
+SP1,Mallorca,2223,0.0,1.0,False
+E3,Tranmere,2425,0.0,1.0,False
+E2,Mansfield,2425,0.0,1.0,False
+I1,Lazio,2324,0.0,1.0,False
+E0,Wolves,2122,0.0,1.0,False
+F1,Nimes,1920,0.0,1.0,False
+SP1,Girona,2223,0.0,1.0,False
+F1,Monaco,1920,0.0,1.0,False
+I1,Inter,2526,0.0,1.0,False
+E0,Crystal Palace,2425,0.0,1.0,False
+E1,Derby,2021,0.0,1.0,False
+SP1,Ath Bilbao,2526,0.0,1.0,False
+D1,Heidenheim,2324,0.0,1.0,False
+E0,Tottenham,2223,0.0,1.0,False
+E3,Salford,2122,0.0,1.0,False
+E2,Blackpool,2526,0.0,1.0,False
+F1,Reims,2122,0.0,1.0,False
+D1,Freiburg,2526,0.0,1.0,False
+E2,Wigan,2425,0.0,1.0,False
+E0,West Ham,2526,0.0,1.0,False
+SP1,Betis,2223,0.0,1.0,False
+E1,Stoke,2526,0.0,1.0,False
+E2,Shrewsbury,2324,0.0,1.0,False
+I1,Como,2526,0.0,1.0,False
+E1,QPR,2526,0.0,1.0,False
+I1,Roma,2526,0.0,1.0,False
+E1,Wrexham,2526,0.0,1.0,False
+E0,Everton,2223,0.0,1.0,False
+E3,Tranmere,2526,0.0,1.0,False
+E3,Barrow,2425,0.0,1.0,False
+E2,Charlton,2425,0.0,1.0,False
+F1,Montpellier,2223,0.0,1.0,False
+E0,Arsenal,2425,0.0,1.0,False
+F1,Brest,2425,0.0,1.0,False
+E0,Leeds,2526,0.0,1.0,False
+I1,Spezia,2122,0.0,1.0,False
+SP1,Celta,1920,0.0,1.0,False
+F1,Angers,2021,0.0,1.0,False
+E0,Aston Villa,2324,0.0,1.0,False
+E1,Coventry,2223,0.0,1.0,False
+D1,Ein Frankfurt,2425,0.0,1.0,False
+E2,Birmingham,2425,0.0,1.0,False
+E2,Lincoln,2324,0.0,1.0,False
+E3,Oldham,2526,0.0,1.0,False
+E0,Nott'm Forest,2223,0.0,1.0,False
+I1,Bologna,2324,0.0,1.0,False
+I1,Monza,2324,0.0,1.0,False
+E3,Plymouth,1920,0.0,1.0,False
+E2,Gillingham,2122,0.0,1.0,False
+I1,Lecce,1920,0.0,1.0,False
+I1,Inter,2122,0.0,1.0,False
+D1,Freiburg,1920,0.0,1.0,False
+E2,Burton,2324,0.0,1.0,False
+I1,Parma,2526,0.0,1.0,False
+F1,Angers,2122,0.0,1.0,False
+E3,Bradford,2223,0.0,1.0,False
+I1,Sampdoria,2021,0.0,1.0,False
+E0,Chelsea,2526,0.0,1.0,False
+D1,Mainz,2526,0.0,1.0,False
+D1,Wolfsburg,2122,0.0,1.0,False
+E0,Liverpool,2425,0.0,1.0,False
+F1,Lyon,2021,-0.32891812735531006,0.9523809523809523,False
+I1,Monza,2425,0.0,1.0,False
+SP1,Alaves,1920,0.0,1.0,False
+SP1,Celta,2324,0.0,1.0,False
+E0,Arsenal,2526,0.0,1.0,False
+E1,Leeds,1920,0.0,1.0,False
+I1,Venezia,2425,0.0,1.0,False
+SP1,Espanol,2223,0.0,1.0,False
+F1,Lens,2526,0.0,1.0,False
+SP1,Mallorca,2526,0.0,1.0,False
+E3,Southend,2021,0.0,1.0,False
+SP1,Osasuna,2425,0.0,1.0,False
+SP1,Osasuna,2526,0.0,1.0,False
+F1,Lille,2526,0.0,1.0,False
+E2,Stockport,2526,0.0,1.0,False
+SP1,Valencia,2425,0.0,1.0,False
+F1,Le Havre,2425,0.0,1.0,False
+E1,Stoke,2021,0.0,1.0,False
+I1,Milan,2223,0.0,1.0,False
+E3,Leyton Orient,2223,0.0,1.0,False
+E1,Sheffield Weds,2324,0.0,1.0,False
+E3,Salford,2324,0.0,1.0,False
+F1,Angers,1920,0.0,1.0,False
+SP1,Sevilla,2324,0.0,1.0,False
+E1,Birmingham,1920,0.0,1.0,False
+E0,Leicester,2122,0.0,1.0,False
+I1,Fiorentina,2122,0.0,1.0,False
+E2,Milton Keynes Dons,1920,-0.8536799736437218,0.47619047619047616,False
+E1,Coventry,2425,0.0,1.0,False
+I1,Roma,2021,0.0,1.0,False
+E3,Swindon,2324,-0.5964320793656581,0.7142857142857143,False
+I1,Bologna,2425,0.0,1.0,False
+E3,Newport County,2526,0.0,1.0,False
+E2,Port Vale,2324,0.0,1.0,False
+D1,RB Leipzig,2223,0.0,1.0,False
+D1,Augsburg,2526,0.0,1.0,False
+E3,Rochdale,2223,0.0,1.0,False
+D1,Bayern Munich,2425,0.0,1.0,False
+E2,Rotherham,2526,0.0,1.0,False
+F1,Auxerre,2223,0.0,1.0,False
+E0,West Ham,2324,0.0,1.0,False
+E1,QPR,2122,0.0,1.0,False
+E0,Burnley,2122,0.0,1.0,False
+I1,Sassuolo,2122,0.0,1.0,False
+D1,Union Berlin,2526,0.0,1.0,False
+E1,Sunderland,2223,0.0,1.0,False
+E2,Portsmouth,2122,0.0,1.0,False
+I1,Cagliari,2021,0.0,1.0,False
+E2,Portsmouth,2223,0.0,1.0,False
+SP1,Ath Madrid,1920,0.0,1.0,False
+D1,RB Leipzig,2122,0.0,1.0,False
+D1,Bayern Munich,2021,0.0,1.0,False
+E1,Blackburn,2223,0.0,1.0,False
+E0,Chelsea,2425,0.0,1.0,False
+E1,Preston,2122,0.0,1.0,False
+I1,Inter,2223,0.0,1.0,False
+I1,Udinese,2223,0.0,1.0,False
+E3,Barrow,2223,0.0,1.0,False
+E2,Portsmouth,1920,0.0,1.0,False
+E2,Bristol Rvs,2425,0.0,1.0,False
+D1,Hoffenheim,2223,0.0,1.0,False
+E3,Exeter,2122,0.0,1.0,False
+F1,Marseille,2526,0.0,1.0,False
+F1,Nimes,2021,0.0,1.0,False
+E3,Port Vale,2425,0.0,1.0,False
+F1,Toulouse,2223,0.0,1.0,False
+SP1,Elche,2122,0.0,1.0,False
+E3,Walsall,1920,0.0,1.0,False
+E3,Cheltenham,2526,0.0,1.0,False
+D1,Bielefeld,2021,0.0,1.0,False
+SP1,Vallecano,2526,0.0,1.0,False
+SP1,Valladolid,1920,0.0,1.0,False
+E1,Reading,2021,0.0,1.0,False
+D1,M'gladbach,2526,0.0,1.0,False
+SP1,Ath Bilbao,2223,0.0,1.0,False
+D1,Freiburg,2021,0.0,1.0,False
+E2,Exeter,2425,0.0,1.0,False
+E2,Peterboro,2223,0.0,1.0,False
+E0,Tottenham,2526,0.0,1.0,False
+E2,Derby,2223,0.0,1.0,False
+E2,Huddersfield,2526,0.0,1.0,False
+E2,Wycombe,2526,0.0,1.0,False
+I1,Fiorentina,1920,0.0,1.0,False
+E2,Hull,2021,0.0,1.0,False
+E2,Burton,1920,0.0,1.0,False
+E2,Barnsley,2425,0.0,1.0,False
+SP1,Villarreal,2223,0.0,1.0,False
+E1,Swansea,2526,0.0,1.0,False
+E0,Chelsea,2223,0.0,1.0,False
+F1,Lyon,1920,0.0,1.0,False
+E3,Grimsby,2425,0.0,1.0,False
+E2,Wigan,2021,0.0,1.0,False
+E1,Swansea,2021,0.0,1.0,False
+E2,Exeter,2526,0.0,1.0,False
+E0,Leicester,2425,0.0,1.0,False
+E2,Luton,2526,0.0,1.0,False
+F1,Angers,2526,0.0,1.0,False
+D1,RB Leipzig,2021,0.0,1.0,False
+SP1,Valencia,1920,0.0,1.0,False
+E0,Bournemouth,2324,0.0,1.0,False
+I1,Inter,2021,0.6578362547106201,0.8571428571428571,False
+D1,Ein Frankfurt,2223,0.0,1.0,False
+E1,Fulham,1920,0.0,1.0,False
+E2,Wigan,2526,0.0,1.0,False
+E1,Luton,2021,0.0,1.0,False
+E3,Carlisle,1920,0.0,1.0,False
+E3,Forest Green,2122,0.0,1.0,False
+E3,Stevenage,2223,0.0,1.0,False
+E1,Ipswich,2324,0.0,1.0,False
+E3,Cheltenham,1920,0.0,1.0,False
+I1,Genoa,1920,0.0,1.0,False
+E2,Northampton,2526,0.0,1.0,False
+I1,Genoa,2324,0.0,1.0,False
+E0,Arsenal,2223,0.0,1.0,False
+E1,Bournemouth,2122,0.0,1.0,False
+SP1,Real Madrid,2324,0.0,1.0,False
+I1,Genoa,2021,0.0,1.0,False
+E0,Leeds,2122,0.0,1.0,False
+E0,Tottenham,2425,0.0,1.0,False
+E1,Southampton,2324,0.0,1.0,False
+I1,Verona,2425,0.0,1.0,False
+E3,Salford,2021,0.0,1.0,False
+I1,Verona,2526,0.0,1.0,False
+D1,Ein Frankfurt,2324,0.0,1.0,False
+E2,Charlton,2122,0.0,1.0,False
+E1,Sheffield United,2425,0.0,1.0,False
+E2,Bolton,2122,0.0,1.0,False
+I1,Milan,2122,0.0,1.0,False
+E1,Burnley,2425,0.0,1.0,False
+SP1,Cadiz,2223,0.0,1.0,False
+E3,Walsall,2526,0.0,1.0,False
+E0,Crystal Palace,1920,0.0,1.0,False
+D1,Hertha,2223,0.0,1.0,False
+E1,Blackburn,2122,0.0,1.0,False
+SP1,Valladolid,2021,0.0,1.0,False
+E0,Liverpool,2021,0.0,1.0,False
+E0,Wolves,2526,0.0,1.0,False
+E2,Ipswich,2122,0.0,1.0,False
+E0,Liverpool,1920,0.0,1.0,False
+E2,Fleetwood Town,2324,0.0,1.0,False
+E2,AFC Wimbledon,2021,0.0,1.0,False
+E0,Fulham,2223,0.0,1.0,False
+D1,RB Leipzig,2324,0.0,1.0,False
+E2,Cambridge,2425,0.0,1.0,False
+I1,Udinese,2021,-0.32891812735531006,1.0,False
+E1,Swansea,1920,0.0,1.0,False
+E2,Wrexham,2425,0.0,1.0,False
+SP1,Mallorca,2425,0.0,1.0,False
+SP1,Mallorca,2324,0.0,1.0,False
+D1,Mainz,2324,0.0,1.0,False
+I1,Bologna,2122,0.0,1.0,False
+I1,Monza,2223,0.0,1.0,False
+SP1,Eibar,1920,0.0,1.0,False
+SP1,Alaves,2526,0.0,1.0,False
+SP1,Valencia,2021,0.0,1.0,False
+E1,Blackpool,2223,0.0,1.0,False
+E2,Doncaster,2122,0.0,1.0,False
+D1,Bochum,2425,0.0,1.0,False
+E3,Crewe,2526,0.0,1.0,False
+E2,Bolton,2425,0.0,1.0,False
+I1,Juventus,2526,0.0,1.0,False
+I1,Empoli,2122,0.0,1.0,False
+F1,Reims,2324,0.0,1.0,False
+E2,Stockport,2425,0.0,1.0,False
+SP1,Granada,2021,0.0,1.0,False
+E2,Oxford,2223,0.0,1.0,False
+D1,Union Berlin,2425,0.0,1.0,False
+SP1,Betis,1920,0.0,1.0,False
+SP1,Villarreal,2324,0.0,1.0,False
+E3,Grimsby,2526,0.0,1.0,False
+E3,Doncaster,2324,0.0,1.0,False
+F1,Auxerre,2425,0.0,1.0,False
+E3,Hartlepool,2223,0.0,1.0,False
+SP1,Granada,2324,0.0,1.0,False
+I1,Napoli,2223,0.0,1.0,False
+E3,Doncaster,2425,0.0,1.0,False
+I1,Atalanta,2425,0.0,1.0,False
+I1,Fiorentina,2021,0.0,1.0,False
+E1,Burnley,2223,0.0,1.0,False
+E0,Newcastle,2324,0.0,1.0,False
+E1,Middlesbrough,2425,0.0,1.0,False
+F1,Lyon,2122,0.0,1.0,False
+E3,Stevenage,2021,0.0,1.0,False
+E0,Everton,2425,0.0,1.0,False
+I1,Udinese,2425,0.0,1.0,False
+E2,Leyton Orient,2425,0.0,1.0,False
+E3,Newport County,1920,0.0,1.0,False
+D1,Augsburg,2223,0.0,1.0,False
+E0,Tottenham,2021,0.0,1.0,False
+D1,Greuther Furth,2122,0.0,1.0,False
+I1,Atalanta,2223,0.0,1.0,False
+D1,Schalke 04,1920,0.0,1.0,False
+E1,Stoke,1920,0.0,1.0,False
+E1,Huddersfield,2223,0.0,1.0,False
+E2,Crewe,2122,0.0,1.0,False
+E2,Plymouth,2223,0.0,1.0,False
+D1,Wolfsburg,2425,0.0,1.0,False
+E2,Shrewsbury,2425,0.0,1.0,False
+D1,Werder Bremen,2526,0.0,1.0,False
+E3,Stevenage,2122,0.0,1.0,False
+F1,Angers,2425,0.0,1.0,False
+I1,Cremonese,2223,0.0,1.0,False
+E3,Notts County,2425,0.0,1.0,False
+E0,Wolves,2021,0.0,1.0,False
+F1,Nantes,2324,0.0,1.0,False
+I1,Udinese,2324,0.0,1.0,False
+E0,Crystal Palace,2223,0.0,1.0,False
+E3,Forest Green,2324,0.0,1.0,False
+I1,Milan,2324,0.0,1.0,False
+I1,Sampdoria,2223,0.0,1.0,False
+F1,Lyon,2425,0.0,1.0,False
+E2,Southend,1920,0.0,1.0,False
+F1,Paris FC,2526,0.0,1.0,False
+SP1,Eibar,2021,0.0,1.0,False
+SP1,Getafe,2526,0.0,1.0,False
+E1,Cardiff,2223,0.0,1.0,False
+E0,Brighton,2021,0.0,1.0,False
+E1,Preston,2223,0.0,1.0,False
+D1,Bochum,2324,0.0,1.0,False
+E2,Ipswich,2021,0.0,1.0,False
+D1,Stuttgart,2526,0.0,1.0,False
+E3,Accrington,2324,0.0,1.0,False
+F1,Le Havre,2324,0.0,1.0,False
+E0,Brighton,2122,0.0,1.0,False
+E1,Cardiff,2324,0.0,1.0,False
+F1,Lens,2425,0.0,1.0,False
+D1,Union Berlin,2122,0.0,1.0,False
+F1,Montpellier,2021,0.0,1.0,False
+E1,Barnsley,2021,0.0,1.0,False
+E1,QPR,1920,0.0,1.0,False
+D1,Dortmund,2425,0.0,1.0,False
+SP1,Las Palmas,2425,0.0,1.0,False
+E1,Charlton,1920,0.0,1.0,False
+E3,Morecambe,2425,0.0,1.0,False
+E0,Fulham,2324,0.0,1.0,False
+E3,Swindon,2526,0.0,1.0,False
+I1,Como,2425,0.0,1.0,False
+D1,Freiburg,2223,0.0,1.0,False
+E1,Charlton,2526,0.0,1.0,False
+D1,Augsburg,2324,0.0,1.0,False
+E1,Birmingham,2021,0.0,1.0,False
+I1,Napoli,2021,0.0,1.0,False
+E2,Doncaster,2526,0.0,1.0,False
+SP1,Sociedad,2526,0.0,1.0,False
+I1,Torino,2324,0.0,1.0,False
+E0,Bournemouth,2223,0.0,1.0,False
+E1,Hull,2223,0.0,1.0,False
+E2,Wycombe,2223,0.0,1.0,False
+SP1,Granada,2122,0.0,1.0,False
+D1,Werder Bremen,1920,0.0,1.0,False
+E2,Burton,2122,0.0,1.0,False
+E3,Northampton,2223,0.0,1.0,False
+I1,Verona,2021,0.0,1.0,False
+E3,AFC Wimbledon,2324,0.0,1.0,False
+E2,Bristol Rvs,2324,0.0,1.0,False
+E3,Mansfield,2021,0.0,1.0,False
+I1,Milan,1920,0.0,1.0,False
+SP1,Alaves,2324,0.0,1.0,False
+E3,Newport County,2425,0.0,1.0,False
+SP1,Cadiz,2324,0.0,1.0,False
+E2,Bristol Rvs,2021,0.0,1.0,False
+E2,Milton Keynes Dons,2223,0.0,1.0,False
+F1,Dijon,2021,0.0,1.0,False
+SP1,Girona,2425,0.0,1.0,False
+SP1,Espanol,2526,0.0,1.0,False
+E3,Notts County,2526,0.0,1.0,False
+E1,Sheffield United,2122,0.0,1.0,False
+E2,Tranmere,1920,0.0,1.0,False
+D1,Paderborn,1920,0.0,1.0,False
+F1,Strasbourg,2526,0.0,1.0,False
+E0,Newcastle,2526,0.0,1.0,False
+D1,Union Berlin,2324,0.0,1.0,False
+E3,Sutton,2223,0.0,1.0,False
+E2,Oxford,2021,0.0,1.0,False
+D1,Ein Frankfurt,2021,0.0,1.0,False
+E3,Crewe,2223,0.0,1.0,False
+I1,Udinese,2122,0.0,1.0,False
+E2,Cheltenham,2122,0.0,1.0,False
+F1,Marseille,1920,0.0,1.0,False
+I1,Juventus,2021,0.0,1.0,False
+D1,Freiburg,2324,0.0,1.0,False
+E0,Chelsea,2122,0.0,1.0,False
+E1,Blackburn,2425,0.0,1.0,False
+F1,Lorient,2324,0.0,1.0,False
+E2,Sheffield Weds,2223,0.0,1.0,False
+E1,Millwall,2223,0.0,1.0,False
+E1,Reading,1920,0.0,1.0,False
+E1,Wigan,1920,0.0,1.0,False
+E0,Brighton,1920,0.0,1.0,False
+E3,Stevenage,1920,0.0,1.0,False
+E1,Birmingham,2526,0.0,1.0,False
+E0,Arsenal,2122,0.0,1.0,False
+D1,Union Berlin,1920,0.0,1.0,False
+F1,Lyon,2223,0.0,1.0,False
+F1,Marseille,2324,0.0,1.0,False
+E0,Crystal Palace,2122,0.0,1.0,False
+E3,AFC Wimbledon,2425,0.0,1.0,False
+E1,Sheffield Weds,2425,0.0,1.0,False
+E1,Millwall,2122,0.0,1.0,False
+D1,FC Koln,2324,0.0,1.0,False
+E3,Crawley Town,2324,0.0,1.0,False
+E3,Grimsby,2223,0.0,1.0,False
+I1,Sassuolo,2021,0.0,1.0,False
+E0,Man City,2526,0.0,1.0,False
+E0,Aston Villa,2223,0.0,1.0,False
+SP1,Valencia,2223,0.0,1.0,False
+I1,Bologna,2021,0.0,1.0,False
+SP1,Oviedo,2526,0.0,1.0,False
+E1,Luton,2223,0.0,1.0,False
+SP1,Real Madrid,2021,0.6578362547106201,0.7142857142857143,False
+F1,Troyes,2223,0.0,1.0,False
+F1,St Etienne,2122,0.0,1.0,False
+E1,Watford,2526,0.0,1.0,False
+E3,Morecambe,1920,0.0,1.0,False
+E3,Shrewsbury,2526,0.0,1.0,False
+I1,Fiorentina,2526,0.0,1.0,False
+E1,Middlesbrough,2223,0.0,1.0,False
+E3,Cheltenham,2425,0.0,1.0,False
+E2,Exeter,2324,0.0,1.0,False
+F1,Lille,2223,0.0,1.0,False
+I1,Bologna,1920,0.0,1.0,False
+E0,Liverpool,2324,0.0,1.0,False
+E1,QPR,2324,0.0,1.0,False
+D1,Werder Bremen,2425,0.0,1.0,False
+E1,Swansea,2324,0.0,1.0,False
+F1,Lens,2223,0.0,1.0,False
