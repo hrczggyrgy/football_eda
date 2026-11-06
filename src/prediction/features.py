@@ -602,10 +602,11 @@ def _add_table_rank(df: pl.DataFrame) -> pl.DataFrame:
     dates = out.select(["Div", "Season", "Date"]).unique()
     teams = out.select(["Div", "Season", "Team"]).unique()
 
-    # Grid: every team on every date in its league-season. Forward-fill each
-    # team's latest post-match PPG to every date (strictly before the date, so
-    # a match played on date D does not reveal its own result).
-    grid = dates.join(teams, how="cross").select(
+    # Grid: every team on every date *within its own league-season*.
+    # Join on Div/Season (not a global cross join) so we only pair teams with
+    # dates in the same league-season. A global cross join would multiply every
+    # date by every team across all leagues/seasons, blowing up memory.
+    grid = teams.join(dates, on=["Div", "Season"]).select(
         ["Div", "Season", "Date", "Team"]
     )
 
