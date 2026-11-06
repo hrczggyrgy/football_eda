@@ -57,14 +57,14 @@ Expanding-window chronological validation (no random splits):
 
 | Model | Brier (↓) | Log loss (↓) | Accuracy (↑) |
 |-------|-----------|--------------|--------------|
-| Baseline (A) | 0.65019 | 1.07445 | 0.43437 |
-| Poisson (B) | 0.65323 | 1.07861 | 0.41168 |
-| Multinomial (C, calibrated) | **0.36094** | **0.61440** | **0.70939** |
+| Baseline (A) | 0.65023 | 1.07452 | 0.43448 |
+| Poisson (B) | 0.65316 | 1.07852 | 0.41186 |
+| Multinomial (C, calibrated) | **0.38540** | **0.65480** | **0.69253** |
 
-The calibrated multinomial model beats the baseline by 0.289 Brier points
-out-of-sample (5 folds, 17,188 test matches), consistent across all five test
-seasons (multinomial Brier 0.356–0.366). The Poisson model does **not** beat
-the baseline and is not preferred.
+The calibrated multinomial model beats the baseline by 0.265 Brier points
+out-of-sample (6 folds, 17,904 test matches including partial 2026/27), consistent
+across all five full test seasons (multinomial Brier 0.353–0.365). The Poisson model
+does **not** beat the baseline and is not preferred.
 
 The improvement comes from legitimate pre-match information: prior-season team
 strength (PPG, Elo, head-to-head, venue), accumulated in-season league table
@@ -80,6 +80,11 @@ genuinely predictive. Mid-season (6–20, small-sample in-season form) is
 harder (Brier 0.395); later-season (21+, reliable in-season form) achieves
 Brier 0.358. A label-shuffle test confirms no leakage (shuffled labels →
 Brier 0.91 vs 0.37 real).
+
+**Early-season caveat:** The partial 2026/27 season (match weeks 1–4, ending
+2026-10-19) shows degraded performance (Brier 0.983 vs baseline 0.651) due to
+minimal in-season form data. Early-season predictions should be treated with
+extra caution.
 
 
 

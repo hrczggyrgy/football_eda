@@ -128,6 +128,11 @@ def build_pre_match_features(team_matches: pl.DataFrame) -> pl.DataFrame:
     out = _add_trend_features(out)
     out = _add_recent_h2h(out)
 
+    # Season progress & recent form features.
+    out = _add_season_progress(out)
+    out = _add_recent_opponent_strength(out)
+    out = _add_recent_venue_form(out)
+
     # Elo ratings (chronological, pre-match).
     from prediction.ratings import build_elo_features
     out = build_elo_features(out)
@@ -204,16 +209,24 @@ def build_pre_match_features(team_matches: pl.DataFrame) -> pl.DataFrame:
 
 
 def _add_prior_season_strength(df: pl.DataFrame) -> pl.DataFrame:
-    """Add prior-season PPG (consecutive seasons, same division) as a prior."""
+    """Add prior-season PPG as a pre-match prior.
+
+    Carries over prior-season PPG across divisions (for promotion/relegation)
+    with division strength adjustment. Teams changing divisions get their
+    previous season PPG adjusted by the relative strength of the two divisions.
+    """
     out = df.sort(["Div", "Team", "Season", "Date"])
     season_num = pl.col("Season").replace(SEASON_ORDER).cast(pl.Int64).alias("Season_Num")
 
-    # Team-season final PPG (mean over matches; full-season aggregate, used
-    # only as prior for the NEXT season - permitted).
+    # Team-season final PPG (full-season aggregate, used only as prior for
+    # the NEXT season - permitted).
     ts = out.group_by(TEAM_SEASON_GROUP).agg(
-        pl.col("Points").mean().alias("Final_PPG")
+        pl.col("Points").mean().alias("Final_PPG"),
+        pl.len().alias("Matches"),
     )
     ts = ts.with_columns(season_num.alias("Season_Num")).sort(["Team", "Season_Num"])
+
+    # Previous season's Final_PPG for the same team (any division).
     ts = ts.with_columns([
         pl.col("Final_PPG").shift(1).over("Team").alias("Prev_Final_PPG"),
         pl.col("Season_Num").shift(1).over("Team").alias("Prev_Season_Num"),
@@ -221,22 +234,74 @@ def _add_prior_season_strength(df: pl.DataFrame) -> pl.DataFrame:
         (pl.col("Season_Num") - pl.col("Prev_Season_Num") == 1).alias("Consecutive")
     )
 
+    # Division strength adjustment: average PPG in each division per season.
+    # Used to adjust prior-season PPG when a team changes divisions.
+    div_strength = out.group_by(["Div", "Season"]).agg(
+        pl.col("Points").mean().alias("Div_Season_PPG")
+    ).sort(["Div", "Season"]).with_columns(
+        pl.col("Div_Season_PPG").shift(1).over("Div").alias("Prev_Div_Season_PPG")
+    ).select(["Div", "Season", "Div_Season_PPG", "Prev_Div_Season_PPG"])
+
+    # Join prior season PPG onto current season.
     prior_lookup = ts.filter(pl.col("Consecutive")).select([
-        pl.col("Div"), pl.col("Team"), pl.col("Season"),
-        pl.col("Prev_Final_PPG").alias("Prior_Season_PPG"),
+        pl.col("Team"), pl.col("Season"), pl.col("Prev_Final_PPG"),
+        pl.col("Prev_Season_Num").alias("Prev_Season"),
     ])
 
-    out = out.join(prior_lookup, on=["Div", "Team", "Season"], how="left",
+    # Join prior season division for division change detection.
+    prior_div = ts.select([
+        pl.col("Team"), pl.col("Season").alias("Prev_Season"),
+        pl.col("Div").alias("Prev_Div"),
+    ]).with_columns(
+        pl.col("Prev_Season").cast(pl.Int64)
+    )
+
+    prior_lookup = prior_lookup.join(prior_div, on=["Team", "Prev_Season"], how="left",
+                                     maintain_order="left")
+
+    out = out.join(prior_lookup, left_on=["Team", "Season"],
+                   right_on=["Team", "Season"], how="left",
                    maintain_order="left")
 
-    # Historical league average PPG from prior seasons only.
-    hist_avg = out.group_by(["Div", "Season"]).agg(
-        pl.col("Points").mean().alias("League_Avg_PPG")
-    ).sort(["Div", "Season"]).with_columns(
-        pl.col("League_Avg_PPG").shift(1).over("Div").alias("Hist_League_Avg_PPG")
-    ).select(["Div", "Season", "Hist_League_Avg_PPG"])
+    # Join prior division for division change detection.
+    out = out.join(prior_div.with_columns(
+        pl.col("Prev_Season").cast(pl.Utf8)
+    ), left_on=["Team", "Season"],
+                   right_on=["Team", "Prev_Season"], how="left",
+                   maintain_order="left")
 
-    out = out.join(hist_avg, on=["Div", "Season"], how="left", maintain_order="left")
+    # Compute division strength adjustment for promoted/relegated teams.
+    out = out.join(div_strength, on=["Div", "Season"], how="left",
+                   maintain_order="left")
+    out = out.join(div_strength.with_columns(
+        pl.col("Season").cast(pl.Int64)
+    ).rename({
+        "Div": "Prev_Div", "Season": "Prev_Season",
+    }), on=["Prev_Div", "Prev_Season"], how="left",
+                   maintain_order="left")
+
+    # Compute adjusted prior PPG: regress toward new division mean.
+    out = out.with_columns([
+        pl.when(pl.col("Prev_Final_PPG").is_not_null() &
+                pl.col("Prev_Div_Season_PPG").is_not_null() &
+                pl.col("Div_Season_PPG").is_not_null())
+        .then(
+            pl.col("Prev_Final_PPG") *
+            (pl.col("Div_Season_PPG") / pl.col("Prev_Div_Season_PPG"))
+        ).otherwise(pl.col("Prev_Final_PPG"))
+        .alias("Prior_Season_PPG")
+    ])
+
+    # For teams with no prior season data, use historical league average.
+    out = out.with_columns(
+        pl.when(pl.col("Prior_Season_PPG").is_null())
+        .then(pl.col("Div_Season_PPG"))
+        .otherwise(pl.col("Prior_Season_PPG"))
+        .alias("Prior_Season_PPG")
+    )
+
+    out = out.drop(["Prev_Final_PPG", "Prev_Season",
+                    "Prev_Div_Season_PPG", "Div_Season_PPG"])
     return out
 
 
@@ -591,3 +656,128 @@ def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
                    right_on=["Div", "Season", "Date", "T1", "T2"], how="left",
                    maintain_order="left")
     return out.drop(["pair_a", "pair_b", "T1", "T2"], strict=False)
+
+
+def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
+    """Season progress: how far into the season we are (0.0 = start, 1.0 = end).
+
+    Computed as matches played so far / total matches in the season.
+    Helps the model weight prior-season PPG vs current-season form:
+    early in the season, prior season matters more; late in the season,
+    current form matters more.
+    Strictly pre-match: uses matches played BEFORE this fixture.
+    """
+    out = df.sort(["Div", "Season", "Date"])
+    # Matches played before this fixture within (Div, Season)
+    matches_so_far = pl.col("Date").cum_count().over(["Div", "Season"]) - 1
+    out = out.with_columns(matches_so_far.alias("Matches_So_Far"))
+
+    # Total matches per season from prior seasons (for estimating season length).
+    season_totals = out.group_by(["Div", "Season"]).agg(
+        pl.len().alias("Season_Matches")
+    ).sort(["Div", "Season"]).with_columns(
+        pl.col("Season_Matches").shift(1).over("Div").alias("Prev_Season_Matches")
+    ).filter(pl.col("Prev_Season_Matches").is_not_null())
+
+    out = out.join(season_totals.select(["Div", "Season", "Prev_Season_Matches"]),
+                   on=["Div", "Season"], how="left", maintain_order="left")
+
+    # If no prior season data, estimate 38 matches (typical league size).
+    out = out.with_columns(
+        pl.when(pl.col("Prev_Season_Matches").is_not_null())
+        .then(pl.col("Prev_Season_Matches"))
+        .otherwise(pl.lit(38))
+        .alias("Season_Total_Matches")
+    )
+
+    out = out.with_columns(
+        (pl.col("Matches_So_Far") / pl.col("Season_Total_Matches"))
+        .alias("Season_Progress")
+    )
+
+    out = out.drop(["Matches_So_Far", "Prev_Season_Matches", "Season_Total_Matches"])
+    return out
+
+
+def _add_recent_opponent_strength(df: pl.DataFrame) -> pl.DataFrame:
+    """Opponent's recent pre-match PPG over last 5 matches (strictly lagged).
+
+    Captures opponent's recent form separately from cumulative PPG.
+    """
+    out = df.sort(["Div", "Team", "Season", "Date"])
+    points = pl.col("Points")
+    prior_points = (points.cum_sum().over(TEAM_SEASON_GROUP) - points).alias(
+        "prior_points"
+    )
+    prior_matches = (points.cum_count().over(TEAM_SEASON_GROUP) - 1).alias(
+        "prior_matches"
+    )
+    out = out.with_columns([prior_points, prior_matches])
+
+    # Build per-team recent PPG (rolling mean over last 5 prior matches).
+    team_recent = out.select([
+        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Team").alias("OppTeam"),
+        pl.col("Points").alias("team_points"),
+    ]).sort(["Div", "OppTeam", "Season", "Date"])
+
+    team_recent = team_recent.with_columns(
+        pl.col("team_points").rolling_mean(5, min_samples=1)
+        .over(["Div", "OppTeam"]).alias("team_recent_ppg")
+    ).with_columns(
+        pl.col("team_recent_ppg").shift(1).over(["Div", "OppTeam"]).alias("team_recent_ppg_pre")
+    ).select(["Div", "Season", "Date", "OppTeam", "team_recent_ppg_pre"])
+
+    out = out.join(team_recent, left_on=["Div", "Season", "Date", "Opponent"],
+                   right_on=["Div", "Season", "Date", "OppTeam"], how="left",
+                   maintain_order="left")
+
+    out = out.with_columns(
+        pl.col("team_recent_ppg_pre").alias("Opp_Recent_PPG")
+    ).drop(["team_recent_ppg_pre", "prior_points", "prior_matches"])
+
+    return out
+
+
+def _add_recent_venue_form(df: pl.DataFrame) -> pl.DataFrame:
+    """Team's recent home/away form over last 5 matches at same venue.
+
+    Separate from overall form because home/away performance differs.
+    Strictly lagged pre-match.
+    """
+    out = df.sort(["Div", "Team", "Season", "Date", "Venue"])
+    points = pl.col("Points")
+    prior_points = (points.cum_sum().over(["Div", "Team", "Season", "Venue"]) - points).alias(
+        "venue_prior_points"
+    )
+    prior_matches = (points.cum_count().over(["Div", "Team", "Season", "Venue"]) - 1).alias(
+        "venue_prior_matches"
+    )
+    out = out.with_columns([prior_points, prior_matches])
+
+    out = out.with_columns(
+        pl.when(pl.col("venue_prior_matches") > 0)
+        .then(pl.col("venue_prior_points") / pl.col("venue_prior_matches"))
+        .otherwise(None).cast(pl.Float64).alias("venue_recent_ppg")
+    )
+
+    # Pivot: home team's home form, away team's away form.
+    home_form = out.filter(pl.col("Venue") == "Home").select([
+        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Team").alias("HomeTeam"),
+        pl.col("venue_recent_ppg").alias("Home_Recent_Venue_PPG"),
+    ])
+    away_form = out.filter(pl.col("Venue") == "Away").select([
+        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Team").alias("AwayTeam"),
+        pl.col("venue_recent_ppg").alias("Away_Recent_Venue_PPG"),
+    ])
+
+    out = out.join(home_form, left_on=["Div", "Season", "Date", "Team"],
+                   right_on=["Div", "Season", "Date", "HomeTeam"], how="left",
+                   maintain_order="left")
+    out = out.join(away_form, left_on=["Div", "Season", "Date", "Team"],
+                   right_on=["Div", "Season", "Date", "AwayTeam"], how="left",
+                   maintain_order="left")
+
+    return out.drop(["venue_prior_points", "venue_prior_matches", "venue_recent_ppg"])

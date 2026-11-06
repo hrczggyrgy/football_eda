@@ -56,7 +56,7 @@ from prediction.reporting import (
 )
 from prediction.inference import PredictionBundle
 
-SEASONS_DEFAULT = ["1920", "2021", "2122", "2223", "2324", "2425", "2526"]
+SEASONS_DEFAULT = ["1920", "2021", "2122", "2223", "2324", "2425", "2526", "2627"]
 LEAGUES_DEFAULT = ["E0", "E1", "E2", "E3", "SP1", "D1", "I1", "F1"]
 
 MODEL_VERSION = "1.0.0"
@@ -161,7 +161,7 @@ def main():
         return PoissonModel(seed=args.seed, use_dixon_coles=False)
 
     def factory_multinomial():
-        return MultinomialModel(seed=args.seed, C=1.0)
+        return MultinomialModel(seed=args.seed, C=1.0, calibrate=True)
 
     factories = {
         "historical_baseline": factory_baseline,

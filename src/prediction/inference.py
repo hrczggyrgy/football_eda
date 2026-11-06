@@ -230,10 +230,17 @@ def predict_fixture(
     except (ValueError, AttributeError):
         pred_date = _date.fromisoformat(str(date_str)[:10])
 
+    # History strictly before the fixture date (same-day safeguard).
+    select_cols = [c for c in CORE_COLS + ["Season"] if c in history_matches.columns]
+    hist = history_matches.filter(pl.col("Date") < pl.lit(pred_date)).select(select_cols)
+    # Use the latest completed season for the synthetic target row so that
+    # team-season rolling features carry over from the most recent season.
+    latest_season = hist.select(pl.col("Season").max()).to_series()[0]
+
     target_row = pl.DataFrame({
         "Div": [division], "Date": pl.Series([pred_date], dtype=pl.Date),
         "HomeTeam": [home_team], "AwayTeam": [away_team],
-        "Season": ["0"],
+        "Season": [latest_season],
         "FTHG": [None], "FTAG": [None], "FTR": [None],
         "Time": [None], "HTHG": [None], "HTAG": [None], "HTR": [None],
         "Referee": [None], "HS": [None], "AS": [None], "HST": [None], "AST": [None],
@@ -241,9 +248,6 @@ def predict_fixture(
         "HY": [None], "AY": [None], "HR": [None], "AR": [None],
     })
 
-    # History strictly before the fixture date (same-day safeguard).
-    select_cols = [c for c in CORE_COLS + ["Season"] if c in history_matches.columns]
-    hist = history_matches.filter(pl.col("Date") < pl.lit(pred_date)).select(select_cols)
     combined = pl.concat([hist, target_row], how="diagonal")
 
     # Convert to team-perspective, then features, then pair home/away.
