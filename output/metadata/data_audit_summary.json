@@ -61,7 +61,44 @@
   },
   "shots_lt_sot": {
     "home": 1,
-    "away": 2
+    "away": 2,
+    "home_fixtures": [
+      {
+        "Div": "E1",
+        "Season": "2425",
+        "Date": "2024-11-10",
+        "HomeTeam": "Burnley",
+        "AwayTeam": "Swansea",
+        "HS": 2,
+        "HST": 7,
+        "AS": 9,
+        "AST": 4
+      }
+    ],
+    "away_fixtures": [
+      {
+        "Div": "E0",
+        "Season": "2122",
+        "Date": "2021-08-15",
+        "HomeTeam": "Newcastle",
+        "AwayTeam": "West Ham",
+        "HS": 17,
+        "HST": 3,
+        "AS": 8,
+        "AST": 9
+      },
+      {
+        "Div": "E2",
+        "Season": "2223",
+        "Date": "2023-04-15",
+        "HomeTeam": "Accrington",
+        "AwayTeam": "Fleetwood Town",
+        "HS": 15,
+        "HST": 3,
+        "AS": 2,
+        "AST": 6
+      }
+    ]
   },
   "ftr_inconsistent": 0,
   "htr_inconsistent": 0

@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-11-06T10:22:14.937534",
+  "timestamp": "2026-11-06T11:59:17.176121",
   "seed": 42,
   "data_dir": ".",
   "output_dir": "output",
@@ -76,7 +76,9 @@
     "table_team_season_consistency.csv",
     "table_team_consistency.csv",
     "table_team_season_clusters.csv",
-    "table_discipline_by_league.csv"
+    "table_discipline_by_league.csv",
+    "table_team_season_summary.csv",
+    "table_league_season_summary.csv"
   ],
   "metadata": [
     "data_audit_summary.json",
@@ -87,7 +89,10 @@
     "master_matches.parquet",
     "team_matches.parquet",
     "team_season.parquet",
-    "consistency.parquet"
+    "consistency.parquet",
+    "team_season_summary.parquet",
+    "league_season_summary.parquet",
+    "football_analytics.duckdb"
   ],
   "software_versions": {
     "polars": "2.0.0",
@@ -95,26 +100,31 @@
     "numpy": "2.5.3"
   },
   "stage_times_seconds": {
-    "data_ingestion": 4.6294,
-    "team_match_construction": 0.1615,
-    "data_validation": 0.0556,
-    "efficiency_ratios": 1.8119,
-    "team_season_metrics": 0.058,
-    "consistency_metrics": 0.135,
-    "advanced_features": 0.9723,
-    "duckdb_sql": 0.5032,
-    "home_advantage": 0.0758,
-    "efficiency_persistence": 0.442,
-    "shot_decomposition": 0.0776,
-    "ht_ft_dynamics": 0.0997,
-    "consistency": 0.0251,
-    "discipline": 0.1967,
-    "robustness": 0.4015,
-    "advanced_insights": 44.2173,
-    "new_insights": 39.2983,
-    "next_insights": 2.6082,
-    "fresh_insights": 18.1588,
-    "visualization": 133.1895
+    "data_ingestion": 4.0568,
+    "team_match_construction": 0.1737,
+    "data_validation": 0.0998,
+    "efficiency_ratios": 2.1696,
+    "team_season_metrics": 0.0497,
+    "consistency_metrics": 0.1119,
+    "advanced_features": 1.5406,
+    "duckdb_sql": 3.759,
+    "home_advantage": 0.068,
+    "efficiency_persistence": 0.3665,
+    "shot_decomposition": 0.0274,
+    "ht_ft_dynamics": 0.074,
+    "consistency": 0.0518,
+    "discipline": 0.1249,
+    "robustness": 0.2641,
+    "advanced_insights": 37.7894,
+    "new_insights": 38.6257,
+    "next_insights": 3.2267,
+    "fresh_insights": 2.9709,
+    "visualization": 131.8872,
+    "artifact_generation": 0.9812
   },
-  "total_runtime_seconds": 247.1176
+  "total_wall_clock_seconds": 228.4619,
+  "total_runtime_seconds": 228.4188,
+  "cache_version": "2",
+  "source_fingerprint": "14934f22b63ee0a6f20ddd99ce5a220487f5361b7f84711b2d9bb9271ef1ddc2",
+  "cache_reused": false
 }

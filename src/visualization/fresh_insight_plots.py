@@ -322,16 +322,19 @@ def plot_game_state_effects(results: Dict, figures_dir: str = '.', tables_dir: s
     
     for i, venue in enumerate(venues):
         venue_data = state_stats[state_stats['Venue'] == venue]
-        if len(venue_data) == 3:  # W, D, L
-            leading = venue_data[venue_data['HT_Result'] == 'W']
-            trailing = venue_data[venue_data['HT_Result'] == 'L']
-            if len(leading) > 0 and len(trailing) > 0:
-                effects = []
-                for m in metrics:
-                    lead_val = leading[m].values[0] if m in leading.columns else 0
-                    trail_val = trailing[m].values[0] if m in trailing.columns else 0
-                    effects.append(trail_val - lead_val)
-                ax.bar(x + (i - 0.5) * width, effects, width, label=venue, alpha=0.8)
+        # Exclude matches with a missing halftime result (HT_Result is null);
+        # a venue may carry more than 3 rows across leagues/seasons, so do not
+        # gate on an exact row count -- only require both leading and trailing
+        # states to be present.
+        leading = venue_data[venue_data['HT_Result'] == 'W']
+        trailing = venue_data[venue_data['HT_Result'] == 'L']
+        if len(leading) > 0 and len(trailing) > 0:
+            effects = []
+            for m in metrics:
+                lead_val = leading[m].values[0] if m in leading.columns else 0
+                trail_val = trailing[m].values[0] if m in trailing.columns else 0
+                effects.append(trail_val - lead_val)
+            ax.bar(x + (i - 0.5) * width, effects, width, label=venue, alpha=0.8)
     
     ax.set_xticks(x)
     ax.set_xticklabels([m.replace('_', ' ') for m in metrics])
@@ -491,6 +494,12 @@ def plot_referee_characteristics(results: Dict, figures_dir: str = '.', tables_d
         for i, (r, p) in enumerate(zip(r_vals, p_vals)):
             ax.text(r + 0.02 if r >= 0 else r - 0.02, i, f'r={r:.3f} (p={p:.3f})', 
                    va='center', ha='left' if r >= 0 else 'right', fontsize=8)
+    else:
+        ax.text(0.5, 0.5, 'No persistence data\n(insufficient consecutive-season referee overlaps)',
+                transform=ax.transAxes, ha='center', va='center', fontsize=9, color='gray')
+        ax.set_title('C. Referee Metric Persistence', fontsize=11, fontweight='bold')
+        ax.set_xticks([])
+        ax.set_yticks([])
     
     # Panel D: Extreme Referees Table
     ax = axes[1, 1]
@@ -509,8 +518,8 @@ def plot_referee_characteristics(results: Dict, figures_dir: str = '.', tables_d
             bottom_str = ', '.join([f"{r['Referee']} ({r[metric]:.2f})" for r in bottom[:3]])
             table_data.append([metric.replace('Avg_', '').replace('_PG', '/PG'), top_str, '', '', bottom_str, '', ''])
     
-    table = ax.table(cellText=table_data, loc='center', cellLoc='left', 
-                    colWidths=[0.25, 0.3, 0.05, 0.05, 0.3, 0.05, 0.05])
+    table = ax.table(cellText=table_data, loc='center', cellLoc='left',
+                    colWidths=[0.22, 0.28, 0.05, 0.05, 0.28, 0.06, 0.06])
     table.auto_set_font_size(False)
     table.set_fontsize(8)
     table.scale(1, 1.5)
