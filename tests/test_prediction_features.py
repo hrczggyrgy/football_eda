@@ -174,6 +174,10 @@ def test_h2h_draw_inversion_same_perspective():
     h2h_ppg = target.select("Home_H2H_PPG").to_series()[0]
     assert h2h_ppg == 1.0, f"Expected Home_H2H_PPG=1.0 for draw, got {h2h_ppg}"
     assert target.select("Home_H2H_Matches").to_series()[0] == 1
+    # Same check on the recent-H2H expression fixed in this commit.
+    recent_ppg = target.select("Home_H2H_Recent_PPG").to_series()[0]
+    assert recent_ppg == 1.0, f"Expected Home_H2H_Recent_PPG=1.0 for draw, got {recent_ppg}"
+    assert target.select("Home_H2H_Recent_Matches").to_series()[0] == 1
 
 
 def test_h2h_draw_inversion_opponent_perspective():
@@ -196,6 +200,10 @@ def test_h2h_draw_inversion_opponent_perspective():
     # X's historical draw against Y: 1 point (not 2).
     h2h_ppg = target.select("Away_H2H_PPG").to_series()[0]
     assert h2h_ppg == 1.0, f"Expected Away_H2H_PPG=1.0 for draw, got {h2h_ppg}"
+    # Same check on the recent-H2H expression fixed in this commit.
+    recent_ppg = target.select("Away_H2H_Recent_PPG").to_series()[0]
+    assert recent_ppg == 1.0, f"Expected Away_H2H_Recent_PPG=1.0 for draw, got {recent_ppg}"
+    assert target.select("Away_H2H_Recent_Matches").to_series()[0] == 1
 
 
 def test_h2h_win_loss_inversion():
@@ -224,6 +232,10 @@ def test_h2h_win_loss_inversion():
     # Y's historical loss against X: 0 points.
     h2h_ppg = target.select("Home_H2H_PPG").to_series()[0]
     assert h2h_ppg == 0.0, f"Expected Home_H2H_PPG=0.0 for loss, got {h2h_ppg}"
+    # Same check on the recent-H2H expression fixed in this commit.
+    recent_ppg = target.select("Home_H2H_Recent_PPG").to_series()[0]
+    assert recent_ppg == 0.0, f"Expected Home_H2H_Recent_PPG=0.0 for loss, got {recent_ppg}"
+    assert target.select("Home_H2H_Recent_Matches").to_series()[0] == 1
 
 
 def test_h2h_first_encounter_null():
@@ -249,6 +261,11 @@ def test_h2h_first_encounter_null():
     assert h2h_ppg is None or (isinstance(h2h_ppg, float) and h2h_ppg != h2h_ppg), h2h_ppg
     h2h_n = target.select("Home_H2H_Matches").to_series()[0]
     assert h2h_n is None or h2h_n == 0, h2h_n
+    # Same null check on the recent-H2H expression fixed in this commit.
+    recent_ppg = target.select("Home_H2H_Recent_PPG").to_series()[0]
+    assert recent_ppg is None or (isinstance(recent_ppg, float) and recent_ppg != recent_ppg), recent_ppg
+    recent_n = target.select("Home_H2H_Recent_Matches").to_series()[0]
+    assert recent_n is None or recent_n == 0, recent_n
 
 
 def _make_master_from_rows(rows):
