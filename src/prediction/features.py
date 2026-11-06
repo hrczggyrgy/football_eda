@@ -122,6 +122,12 @@ def build_pre_match_features(team_matches: pl.DataFrame) -> pl.DataFrame:
     out = _add_form_momentum(out)
     out = _add_head_to_head(out)
 
+    # Streaks, table rank, momentum trends, and recent H2H.
+    out = _add_streak_features(out)
+    out = _add_table_rank(out)
+    out = _add_trend_features(out)
+    out = _add_recent_h2h(out)
+
     # Elo ratings (chronological, pre-match).
     from prediction.ratings import build_elo_features
     out = build_elo_features(out)
@@ -183,6 +189,12 @@ def build_pre_match_features(team_matches: pl.DataFrame) -> pl.DataFrame:
         "Team_Form_Momentum",
         # Head-to-head.
         "H2H_PPG", "H2H_GF_PG", "H2H_GA_PG", "H2H_Matches",
+        "H2H_Recent_PPG", "H2H_Recent_Matches",
+        # Streaks.
+        "streak_W", "streak_D", "streak_L",
+        # Table rank & momentum trends.
+        "Team_Table_Rank",
+        "Team_GD_Momentum", "Team_Shots_Momentum", "Team_GA_Trend",
         # Elo.
         "Elo_Base_Rating", "Elo_Opponent_Rating", "Elo_Exp_Home", "Elo_Rating_Diff",
     ]
@@ -419,6 +431,162 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
         pl.len().alias("H2H_Matches"),
     ])
     # Map back: the focal row's team is T1.
+    out = out.join(agg, left_on=["Div", "Season", "Date", "Team", "Opponent"],
+                   right_on=["Div", "Season", "Date", "T1", "T2"], how="left",
+                   maintain_order="left")
+    return out.drop(["pair_a", "pair_b", "T1", "T2"], strict=False)
+
+
+def _add_streak_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Current win/draw/loss streak BEFORE this match (strictly lagged, pre-match).
+
+    For each team-match, the streak is computed from prior matches only
+    (rows 1..N-1), never including the current match's result. A team on a
+    3-game winning streak going into this match has streak_W = 3.
+    """
+    out = df.sort(["Div", "Team", "Season", "Date"])
+    ftr = pl.col("FT_Result")
+
+    # Encode result: W=1, D=0, L=-1
+    result_code = (
+        pl.when(ftr == "W").then(pl.lit(1))
+        .when(ftr == "D").then(pl.lit(0))
+        .when(ftr == "L").then(pl.lit(-1))
+        .otherwise(None).cast(pl.Int8)
+    )
+    out = out.with_columns(result_code.alias("result_code"))
+
+    # result_code of the PRIOR match (shifted by 1 within team-season).
+    out = out.with_columns(
+        result_code.shift(1).over(TEAM_SEASON_GROUP).alias("prior_rc")
+    )
+
+    # same_as_prev[k] = True if result_code[k] == result_code[k-1], i.e. the
+    # streak continues from the previous match. First row: False (no prior).
+    same_as_prev = (
+        result_code == result_code.shift(1).over(TEAM_SEASON_GROUP)
+    ).fill_null(False)
+
+    # Group id: increments whenever the streak breaks (same_as_prev = False).
+    out = out.with_columns(
+        (~same_as_prev).cast(pl.Int8).cum_sum().over(TEAM_SEASON_GROUP).alias("streak_grp")
+    )
+
+    # Position within each streak group (1-based). For row N-1, this equals
+    # the streak length going into row N.
+    out = out.with_columns(
+        pl.col("result_code").cum_count().over(TEAM_SEASON_GROUP + ["streak_grp"]).alias("grp_pos")
+    )
+
+    # Streak going into this match = position of prior row within its group.
+    # Only non-zero if the prior match's result matches the streak type.
+    out = out.with_columns([
+        pl.when(pl.col("prior_rc") == 1).then(pl.col("grp_pos").shift(1)).otherwise(0).alias("streak_W"),
+        pl.when(pl.col("prior_rc") == 0).then(pl.col("grp_pos").shift(1)).otherwise(0).alias("streak_D"),
+        pl.when(pl.col("prior_rc") == -1).then(pl.col("grp_pos").shift(1)).otherwise(0).alias("streak_L"),
+    ])
+
+    # First match of season: prior_rc is null -> all streaks = 0.
+    out = out.with_columns([
+        pl.when(pl.col("prior_rc").is_null()).then(0).otherwise(pl.col("streak_W")).alias("streak_W"),
+        pl.when(pl.col("prior_rc").is_null()).then(0).otherwise(pl.col("streak_D")).alias("streak_D"),
+        pl.when(pl.col("prior_rc").is_null()).then(0).otherwise(pl.col("streak_L")).alias("streak_L"),
+    ])
+
+    return out.drop(["result_code", "streak_grp", "grp_pos", "prior_rc"])
+
+
+def _add_table_rank(df: pl.DataFrame) -> pl.DataFrame:
+    """League table rank before the match (strictly lagged).
+
+    Rank is computed within (Div, Season, Match_Num) so teams are compared
+    at the same stage of the season. Based on pre-match PPG only — no future
+    information from other teams' later matches enters the rank.
+    Teams with 0 prior matches get rank = null.
+    """
+    out = df
+
+    if "Team_PPG_Before" not in out.columns or "Match_Num" not in out.columns:
+        return out
+
+    # Rank within (Div, Season, Match_Num) by pre-match PPG.
+    # Teams at the same match number are compared against each other.
+    out = out.with_columns(
+        pl.col("Team_PPG_Before")
+        .rank(method="ordinal", descending=True)
+        .over(["Div", "Season", "Match_Num"])
+        .alias("Team_Table_Rank")
+    )
+
+    # First match of season: no prior data -> rank null.
+    out = out.with_columns(
+        pl.when(pl.col("Team_Cum_Matches_Before") == 0)
+        .then(None)
+        .otherwise(pl.col("Team_Table_Rank"))
+        .alias("Team_Table_Rank")
+    )
+
+    return out
+
+
+def _add_trend_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Short-term momentum trends from rolling windows (strictly lagged).
+
+    - GD_Momentum = GD_L3 - GD_L5 (recent vs earlier goal difference form)
+    - Shots_Momentum = Shots_L3 - Shots_L5 (recent vs earlier shot volume)
+    - GA_Trend = GA_L3 - GA_L5 (recent vs earlier goals conceded)
+    Positive values = improving form (more GD/shots, fewer GA).
+    """
+    out = df
+    need = {"GD_L3", "GD_L5", "Shots_L3", "Shots_L5", "GA_L3", "GA_L5"} <= set(out.columns)
+    if need:
+        out = out.with_columns([
+            (pl.col("GD_L3") - pl.col("GD_L5")).alias("Team_GD_Momentum"),
+            (pl.col("Shots_L3") - pl.col("Shots_L5")).alias("Team_Shots_Momentum"),
+            (pl.col("GA_L3") - pl.col("GA_L5")).alias("Team_GA_Trend"),
+        ])
+    return out
+
+
+def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
+    """Recent head-to-head PPG over the last 5 encounters (strictly lagged).
+
+    Similar to _add_head_to_head but limited to the most recent 5 prior
+    encounters between the same unordered team pair in the same Div/Season.
+    Captures short-term rivalry form rather than all-time H2H.
+    """
+    out = df.sort(["Div", "Team", "Season", "Date"])
+    left = out.select([
+        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Team").alias("T1"), pl.col("Opponent").alias("T2"),
+        pl.col("Points").alias("pts"),
+    ])
+    left_a = left.with_columns(
+        pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T1")).otherwise(pl.col("T2"))
+        .alias("pair_a"),
+        pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T2")).otherwise(pl.col("T1"))
+        .alias("pair_b"),
+    )
+    right = left_a.clone()
+    joined = left_a.join_asof(
+        right,
+        left_on="Date", right_on="Date",
+        by_left=["Div", "Season", "pair_a", "pair_b"],
+        by_right=["Div", "Season", "pair_a", "pair_b"],
+        strategy="backward",
+        allow_exact_matches=False,
+        suffix="_hist",
+    )
+    # Limit to last 5 historical encounters per pair per date.
+    joined = joined.with_columns(
+        pl.col("pts_hist").cum_count().over(["Div", "Season", "Date", "T1", "T2", "pair_a", "pair_b"]).alias("h2h_order")
+    )
+    joined = joined.filter(pl.col("h2h_order") <= 5)
+
+    agg = joined.group_by(["Div", "Season", "Date", "T1", "T2"]).agg([
+        pl.col("pts_hist").mean().alias("H2H_Recent_PPG"),
+        pl.len().alias("H2H_Recent_Matches"),
+    ])
     out = out.join(agg, left_on=["Div", "Season", "Date", "Team", "Opponent"],
                    right_on=["Div", "Season", "Date", "T1", "T2"], how="left",
                    maintain_order="left")

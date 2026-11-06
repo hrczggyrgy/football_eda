@@ -20,8 +20,10 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.stats import poisson
 from sklearn.linear_model import LogisticRegression, PoissonRegressor
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.isotonic import IsotonicRegression
 
 from prediction.utils import (
     OUTCOME_LABELS, OUTCOME_TO_INDEX, INDEX_TO_OUTCOME,
@@ -45,6 +47,12 @@ _BASE_TEAM_FEATURES = [
     "Team_Form_Momentum",
     # Head-to-head within Div/Season.
     "H2H_PPG", "H2H_GF_PG", "H2H_GA_PG", "H2H_Matches",
+    "H2H_Recent_PPG", "H2H_Recent_Matches",
+    # Streaks (consecutive W/D/L before this match).
+    "streak_W", "streak_D", "streak_L",
+    # Table rank & momentum trends.
+    "Team_Table_Rank",
+    "Team_GD_Momentum", "Team_Shots_Momentum", "Team_GA_Trend",
     # League-level scoring environment (kept once, not prefixed).
     "League_Avg_GF_PG", "League_Avg_GA_PG",
     # Elo ratings (kept once; derived from pair of teams).
@@ -375,16 +383,18 @@ class MultinomialModel:
 
     def __init__(self, seed: int = 42, C: Optional[float] = None,
                  max_iter: int = 1000, calibrate: bool = True,
-                 n_inner_folds: int = 2):
+                 n_inner_folds: int = 2,
+                 calibration_method: str = "platt"):
         self.seed = seed
         self.C = C  # If None, tuned via inner chronological validation.
         self.max_iter = max_iter
         self.calibrate = calibrate
         self.n_inner_folds = n_inner_folds
+        self.calibration_method = calibration_method  # "platt" or "isotonic"
         self.fitted = False
         self.model: Optional[LogisticRegression] = None
         self.scaler: Optional[StandardScaler] = None
-        self.calibrator: Optional[LogisticRegression] = None
+        self.calibrator: Optional[object] = None
         self.feature_names: List[str] = []
         self.classes_: np.ndarray = np.array([0, 1, 2])
         self.C_used: Optional[float] = None
@@ -547,13 +557,23 @@ class MultinomialModel:
         if self.calibrate and len(oof_probs_list) > 0:
             O = np.vstack(oof_probs_list)
             Y = np.concatenate(oof_y_list)
-            # Calibrator: logistic regression mapping raw probs -> calibrated probs.
-            cal = LogisticRegression(
-                penalty="l2", C=1.0, solver="lbfgs", max_iter=self.max_iter,
-                random_state=self.seed,
-            )
-            cal.fit(O, Y)
-            self.calibrator = cal
+            if self.calibration_method == "isotonic":
+                # Isotonic regression: one per class (one-vs-rest calibration).
+                # Fits a monotonic mapping from raw prob -> calibrated prob.
+                cals = []
+                for k in range(3):
+                    iso = IsotonicRegression(out_of_bounds="clip")
+                    iso.fit(O[:, k], (Y == k).astype(np.float64))
+                    cals.append(iso)
+                self.calibrator = cals
+            else:
+                # Platt scaling: multinomial logistic regression on raw probs.
+                cal = LogisticRegression(
+                    penalty="l2", C=1.0, solver="lbfgs", max_iter=self.max_iter,
+                    random_state=self.seed,
+                )
+                cal.fit(O, Y)
+                self.calibrator = cal
 
         return self
 
@@ -590,13 +610,22 @@ class MultinomialModel:
 
         # Apply calibration fitted on out-of-fold training predictions only.
         if self.calibrator is not None:
-            calibrated = self.calibrator.predict_proba(ordered)
-            # Align calibrator classes to H/D/A order.
-            cal_ordered = np.zeros((calibrated.shape[0], 3))
-            for i, cls in enumerate(self.calibrator.classes_):
-                if 0 <= int(cls) <= 2:
-                    cal_ordered[:, int(cls)] = calibrated[:, i]
-            ordered = cal_ordered / cal_ordered.sum(axis=1, keepdims=True)
+            if self.calibration_method == "isotonic" and isinstance(
+                self.calibrator, list
+            ):
+                # Isotonic regression: apply per-class monotonic mapping.
+                cal_probs = np.column_stack([
+                    self.calibrator[k].predict(ordered[:, k]) for k in range(3)
+                ])
+                ordered = cal_probs / cal_probs.sum(axis=1, keepdims=True)
+            else:
+                # Platt scaling: multinomial logistic regression on raw probs.
+                calibrated = self.calibrator.predict_proba(ordered)
+                cal_ordered = np.zeros((calibrated.shape[0], 3))
+                for i, cls in enumerate(self.calibrator.classes_):
+                    if 0 <= int(cls) <= 2:
+                        cal_ordered[:, int(cls)] = calibrated[:, i]
+                ordered = cal_ordered / cal_ordered.sum(axis=1, keepdims=True)
 
         return ModelResult(
             model_name="multinomial_logistic",
@@ -606,6 +635,7 @@ class MultinomialModel:
             fitted=True,
             feature_names=self.feature_names,
             metadata={"C": self.C_used, "calibrated": self.calibrator is not None,
+                      "calibration_method": self.calibration_method,
                       "classes": self.classes_.tolist(),
                       "goal_model": self.goal_model_h is not None},
         )
