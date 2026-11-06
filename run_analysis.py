@@ -12,16 +12,18 @@ Pandas is used only at the Matplotlib/seaborn plotting boundary.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 import polars as pl
 import duckdb
+import pyarrow.parquet as pq
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
@@ -59,8 +61,79 @@ from visualization.new_insight_plots import create_all_new_figures
 from visualization.next_insight_plots import create_all_next_figures
 from visualization.fresh_insight_plots import create_all_fresh_figures
 
-# DuckDB persistent database (optional, alongside in-memory)
+# DuckDB persistent database (alongside in-memory registration)
 DUCKDB_PATH = Path('output') / 'data' / 'football_analytics.duckdb'
+
+# Cache version. Bump this whenever the ingestion/feature-engineering logic
+# changes so cached Parquet datasets are never reused after a logic change.
+CACHE_VERSION = '2'
+
+# Canonical cached datasets and the columns each must contain (schema check).
+CACHE_FILES = {
+    'master_matches.parquet': set(CORE_COLS) | {'Season'},
+    'team_matches.parquet': {
+        'Div', 'Date', 'Season', 'Team', 'Opponent', 'Venue', 'GF', 'GA',
+        'GD', 'FT_Result', 'Shots', 'Points',
+    },
+    'team_season.parquet': {'Div', 'Team', 'Season', 'PPG', 'Matches'},
+    'consistency.parquet': {'Div', 'Team', 'Season', 'PPG', 'Matches'},
+}
+
+
+def _hash_file(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def source_fingerprint(data_dir: Path, seasons: List[str]) -> str:
+    """Fingerprint of the source data plus the engineering logic version.
+
+    The fingerprint changes if any source ZIP changes or if the ingestion /
+    feature-engineering code (``run_analysis.py``,
+    ``src/data/load_data.py``, ``src/features/engineer.py``) changes, so a
+    cache built from stale data or stale logic is never reused.
+    """
+    h = hashlib.sha256()
+    h.update(CACHE_VERSION.encode())
+    for src in [
+        Path(__file__),
+        Path(__file__).parent / 'src' / 'data' / 'load_data.py',
+        Path(__file__).parent / 'src' / 'features' / 'engineer.py',
+    ]:
+        if src.exists():
+            h.update(f'{src}:{_hash_file(src)}'.encode())
+    for season in sorted(seasons):
+        zp = Path(data_dir) / season / 'data.zip'
+        if zp.exists():
+            h.update(f'{season}:{_hash_file(zp)}'.encode())
+    return h.hexdigest()
+
+
+def cache_valid(output_dirs: Dict[str, Path], fingerprint: str) -> bool:
+    """True if all cached Parquet datasets exist, match the fingerprint, and
+    pass a schema check against the current code."""
+    metadata_path = output_dirs['metadata'] / 'manifest.json'
+    for name, required_cols in CACHE_FILES.items():
+        parquet_path = output_dirs['data'] / name
+        if not parquet_path.exists():
+            return False
+        try:
+            schema = set(pq.read_schema(parquet_path).names)
+        except Exception:
+            return False
+        if not required_cols <= schema:
+            return False
+    if not metadata_path.exists():
+        return False
+    try:
+        manifest = json.loads(metadata_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    return (
+        manifest.get('cache_version') == CACHE_VERSION
+        and manifest.get('source_fingerprint') == fingerprint
+    )
 
 
 def parse_args():
@@ -79,6 +152,8 @@ def parse_args():
     parser.add_argument('--skip-new', action='store_true', help='Skip new insight analyses (questions 1-6)')
     parser.add_argument('--skip-next', action='store_true', help='Skip next insight analyses (questions 7-11)')
     parser.add_argument('--skip-fresh', action='store_true', help='Skip fresh insight analyses (questions 12-16)')
+    parser.add_argument('--reuse-cache', action='store_true',
+                        help='Reuse cached Parquet datasets if the source-data and logic fingerprint matches')
     return parser.parse_args()
 
 
@@ -124,6 +199,12 @@ def main():
     SEASONS = args.seasons
 
     stage_times: Dict[str, float] = {}
+    _PIPELINE_START = time.perf_counter()
+
+    # Cache reuse: validate source-data + engineering-logic fingerprint against
+    # the stored Parquet datasets before rebuilding anything.
+    fingerprint = source_fingerprint(DATA_DIR, SEASONS)
+    reuse_cache = args.reuse_cache and cache_valid(OUTPUT_DIRS, fingerprint)
 
     print("=" * 60)
     print("FOOTBALL ANALYTICS STUDY - PIPELINE (Polars + DuckDB)")
@@ -137,21 +218,34 @@ def main():
     # -----------------------------------------------------------------
     # 1. DATA INGESTION (Polars)
     # -----------------------------------------------------------------
-    print("\n[1/11] Ingesting data (Polars)...")
-    t0 = time.perf_counter()
-    master = build_master_dataset(DATA_DIR, TARGET_LEAGUES, SEASONS, usecols=CORE_COLS)
-    t_load = time.perf_counter() - t0
-    stage_times['data_ingestion'] = t_load
-    print(f"  Master matches: {master.height}")
-    print(f"  Leagues: {master.select(pl.col('Div').unique()).to_series().to_list()}")
-    print(f"  Seasons: {sorted(master.select(pl.col('Season').unique()).to_series().to_list())}")
-    print(f"  Date range: {master.select(pl.col('Date').min()).to_series()[0]} to {master.select(pl.col('Date').max()).to_series()[0]}")
+    if reuse_cache:
+        print(f"\n  Reusing cached Parquet datasets (fingerprint {fingerprint[:12]}...)")
+        t0 = time.perf_counter()
+        master = pl.read_parquet(OUTPUT_DIRS['data'] / 'master_matches.parquet')
+        team_matches = pl.read_parquet(OUTPUT_DIRS['data'] / 'team_matches.parquet')
+        team_season = pl.read_parquet(OUTPUT_DIRS['data'] / 'team_season.parquet')
+        consistency = pl.read_parquet(OUTPUT_DIRS['data'] / 'consistency.parquet')
+        stage_times['cache_load'] = time.perf_counter() - t0
+        print(f"  Cached: {master.height} matches, {team_matches.height} team-matches, "
+              f"{team_season.height} team-seasons, {consistency.height} consistency records")
+    else:
+        if args.reuse_cache:
+            print(f"\n  No valid cache found (fingerprint {fingerprint[:12]}...); rebuilding from source")
+        print("\n[1/11] Ingesting data (Polars)...")
+        t0 = time.perf_counter()
+        master = build_master_dataset(DATA_DIR, TARGET_LEAGUES, SEASONS, usecols=CORE_COLS)
+        t_load = time.perf_counter() - t0
+        stage_times['data_ingestion'] = t_load
+        print(f"  Master matches: {master.height}")
+        print(f"  Leagues: {master.select(pl.col('Div').unique()).to_series().to_list()}")
+        print(f"  Seasons: {sorted(master.select(pl.col('Season').unique()).to_series().to_list())}")
+        print(f"  Date range: {master.select(pl.col('Date').min()).to_series()[0]} to {master.select(pl.col('Date').max()).to_series()[0]}")
 
-    t0 = time.perf_counter()
-    team_matches = build_team_match_dataset(master)
-    stage_times['team_match_construction'] = time.perf_counter() - t0
-    print(f"  Team-match rows: {team_matches.height}")
-    print(f"  Unique teams: {team_matches.select(pl.col('Team').n_unique()).to_series()[0]}")
+        t0 = time.perf_counter()
+        team_matches = build_team_match_dataset(master)
+        stage_times['team_match_construction'] = time.perf_counter() - t0
+        print(f"  Team-match rows: {team_matches.height}")
+        print(f"  Unique teams: {team_matches.select(pl.col('Team').n_unique()).to_series()[0]}")
 
     # Data quality audit
     t0 = time.perf_counter()
@@ -164,47 +258,52 @@ def main():
         json.dump(_jsonify(audit), f, indent=2)
 
     # -----------------------------------------------------------------
-    # 2. FEATURE ENGINEERING (Polars)
-    # -----------------------------------------------------------------
-    print("\n[2/11] Engineering features (Polars)...")
-    t0 = time.perf_counter()
-    team_matches = add_efficiency_ratios(team_matches)
-    team_matches = add_rolling_features(team_matches, window=5, min_periods=3)
-    team_matches = add_opponent_strength(team_matches)
-    stage_times['efficiency_ratios'] = time.perf_counter() - t0
+    # 2+3. FEATURE ENGINEERING & ADVANCED FEATURES (Polars)
+    # Skipped when reusing a valid cache: the Parquet datasets already
+    # contain the engineered team-match and team-season frames.
+    if not reuse_cache:
+        # -----------------------------------------------------------------
+        # 2. FEATURE ENGINEERING (Polars)
+        # -----------------------------------------------------------------
+        print("\n[2/11] Engineering features (Polars)...")
+        t0 = time.perf_counter()
+        team_matches = add_efficiency_ratios(team_matches)
+        team_matches = add_rolling_features(team_matches, window=5, min_periods=3)
+        team_matches = add_opponent_strength(team_matches)
+        stage_times['efficiency_ratios'] = time.perf_counter() - t0
 
-    t0 = time.perf_counter()
-    team_season = compute_team_season_metrics(team_matches, min_matches=20)
-    stage_times['team_season_metrics'] = time.perf_counter() - t0
-    print(f"  Team-seasons (20+ matches): {team_season.height}")
+        t0 = time.perf_counter()
+        team_season = compute_team_season_metrics(team_matches, min_matches=20)
+        stage_times['team_season_metrics'] = time.perf_counter() - t0
+        print(f"  Team-seasons (20+ matches): {team_season.height}")
 
-    # Add corner metrics for next insights
-    team_season = team_season.with_columns([
-        (pl.col('Corners') / pl.col('Matches')).alias('Corners_PG'),
-        (pl.col('Corners_Against') / pl.col('Matches')).alias('Corners_Ag_PG'),
-        pl.when(pl.col('Corners') > 0).then(pl.col('Shots') / pl.col('Corners')).otherwise(None).alias('Shots_Per_Corner'),
-        pl.when(pl.col('Corners') > 0).then(pl.col('GF') / pl.col('Corners')).otherwise(None).alias('Goals_Per_Corner'),
-    ])
+        # Add corner metrics for next insights
+        team_season = team_season.with_columns([
+            (pl.col('Corners') / pl.col('Matches')).alias('Corners_PG'),
+            (pl.col('Corners_Against') / pl.col('Matches')).alias('Corners_Ag_PG'),
+            pl.when(pl.col('Corners') > 0).then(pl.col('Shots') / pl.col('Corners')).otherwise(None).alias('Shots_Per_Corner'),
+            pl.when(pl.col('Corners') > 0).then(pl.col('GF') / pl.col('Corners')).otherwise(None).alias('Goals_Per_Corner'),
+        ])
 
-    t0 = time.perf_counter()
-    consistency = compute_consistency_metrics(team_matches, min_matches=10)
-    stage_times['consistency_metrics'] = time.perf_counter() - t0
-    print(f"  Consistency records: {consistency.height}")
+        t0 = time.perf_counter()
+        consistency = compute_consistency_metrics(team_matches, min_matches=10)
+        stage_times['consistency_metrics'] = time.perf_counter() - t0
+        print(f"  Consistency records: {consistency.height}")
 
-    # -----------------------------------------------------------------
-    # 3. ADVANCED FEATURES (Polars)
-    # -----------------------------------------------------------------
-    print("\n[3/11] Computing advanced features (Polars)...")
-    t0 = time.perf_counter()
-    team_season = add_season_order(team_season)
-    team_season = add_next_season_metrics(team_season)
+        # -----------------------------------------------------------------
+        # 3. ADVANCED FEATURES (Polars)
+        # -----------------------------------------------------------------
+        print("\n[3/11] Computing advanced features (Polars)...")
+        t0 = time.perf_counter()
+        team_season = add_season_order(team_season)
+        team_season = add_next_season_metrics(team_season)
 
-    profile_features = ['GF_PG', 'GA_PG', 'Shots_PG', 'Shots_Against_PG',
-                        'Shot_Accuracy', 'Opp_Shot_Accuracy',
-                        'Goals_Per_Shot', 'GA_Per_Opp_Shot']
-    team_season = cluster_team_profiles(team_season, profile_features, n_clusters=5)
-    stage_times['advanced_features'] = time.perf_counter() - t0
-    print(f"  Clusters assigned: {team_season.select(pl.col('Cluster').is_not_null().sum()).to_series()[0]} team-seasons")
+        profile_features = ['GF_PG', 'GA_PG', 'Shots_PG', 'Shots_Against_PG',
+                            'Shot_Accuracy', 'Opp_Shot_Accuracy',
+                            'Goals_Per_Shot', 'GA_Per_Opp_Shot']
+        team_season = cluster_team_profiles(team_season, profile_features, n_clusters=5)
+        stage_times['advanced_features'] = time.perf_counter() - t0
+        print(f"  Clusters assigned: {team_season.select(pl.col('Cluster').is_not_null().sum()).to_series()[0]} team-seasons")
 
     # -----------------------------------------------------------------
     # 4. DUCKDB ANALYTICAL SQL (team-season & league-season summaries)
@@ -212,12 +311,20 @@ def main():
     print("\n[4/11] DuckDB analytical SQL...")
     t0 = time.perf_counter()
 
-    con = duckdb.connect(database=':memory:')
+    con = duckdb.connect(database=str(DUCKDB_PATH))
     try:
         # Register Polars DataFrames as DuckDB views via Arrow (zero-copy)
-        con.register('master_matches', master.to_arrow())
-        con.register('team_matches', team_matches.to_arrow())
-        con.register('team_season', team_season.to_arrow())
+        con.register('arrow_master', master.to_arrow())
+        con.register('arrow_team_matches', team_matches.to_arrow())
+        con.register('arrow_team_season', team_season.to_arrow())
+        con.register('arrow_consistency', consistency.to_arrow())
+
+        # Materialize the registered datasets into persistent DuckDB tables so
+        # the DuckDB file is a real analytical artifact (not throwaway views).
+        con.execute("CREATE OR REPLACE TABLE master_matches AS SELECT * FROM arrow_master")
+        con.execute("CREATE OR REPLACE TABLE team_matches AS SELECT * FROM arrow_team_matches")
+        con.execute("CREATE OR REPLACE TABLE team_season AS SELECT * FROM arrow_team_season")
+        con.execute("CREATE OR REPLACE TABLE consistency AS SELECT * FROM arrow_consistency")
 
         # Reusable analytical SQL: team-season summary
         team_season_sql = con.execute("""
@@ -242,6 +349,12 @@ def main():
             GROUP BY Div, Season
             ORDER BY Div, Season
         """).pl()
+
+        # Persist the SQL outputs as reusable analytical tables.
+        team_season_sql.write_csv(OUTPUT_DIRS['tables'] / 'table_team_season_summary.csv')
+        league_season_sql.write_csv(OUTPUT_DIRS['tables'] / 'table_league_season_summary.csv')
+        team_season_sql.write_parquet(OUTPUT_DIRS['data'] / 'team_season_summary.parquet')
+        league_season_sql.write_parquet(OUTPUT_DIRS['data'] / 'league_season_summary.parquet')
 
         # Data quality check via SQL
         dq_checks = con.execute("""
@@ -473,13 +586,18 @@ def main():
     with open(OUTPUT_DIRS['metadata'] / 'feature_dictionary.json', 'w') as f:
         json.dump(feature_dict, f, indent=2)
 
-    # Save processed data as Parquet (canonical reusable storage)
+    # Save processed data as Parquet (canonical reusable storage).
     master.write_parquet(OUTPUT_DIRS['data'] / 'master_matches.parquet')
     team_matches.write_parquet(OUTPUT_DIRS['data'] / 'team_matches.parquet')
     team_season.write_parquet(OUTPUT_DIRS['data'] / 'team_season.parquet')
     consistency.write_parquet(OUTPUT_DIRS['data'] / 'consistency.parquet')
 
-    # Manifest
+    stage_times['artifact_generation'] = time.perf_counter() - t0
+
+    # -----------------------------------------------------------------
+    # 8. MANIFEST (written last so artifact generation is included)
+    # -----------------------------------------------------------------
+    total_wall_clock = time.perf_counter() - _PIPELINE_START
     manifest = {
         'timestamp': datetime.now().isoformat(),
         'seed': args.seed,
@@ -501,25 +619,33 @@ def main():
             'table_team_consistency.csv',
             'table_team_season_clusters.csv',
             'table_discipline_by_league.csv',
+            'table_team_season_summary.csv',
+            'table_league_season_summary.csv',
         ],
         'metadata': ['data_audit_summary.json', 'feature_dictionary.json', 'manifest.json'],
         'data_files': ['master_matches.parquet', 'team_matches.parquet',
-                       'team_season.parquet', 'consistency.parquet'],
+                       'team_season.parquet', 'consistency.parquet',
+                       'team_season_summary.parquet', 'league_season_summary.parquet',
+                       'football_analytics.duckdb'],
         'software_versions': {
             'polars': pl.__version__,
             'duckdb': duckdb.__version__,
             'numpy': np.__version__,
         },
         'stage_times_seconds': {k: round(v, 4) for k, v in stage_times.items()},
+        # Total wall-clock covers the whole run end-to-end (including artifact
+        # export), measured independently of the summed stage timings.
+        'total_wall_clock_seconds': round(total_wall_clock, 4),
         'total_runtime_seconds': round(sum(stage_times.values()), 4),
+        'cache_version': CACHE_VERSION,
+        'source_fingerprint': fingerprint,
+        'cache_reused': bool(reuse_cache),
     }
     with open(OUTPUT_DIRS['metadata'] / 'manifest.json', 'w') as f:
         json.dump(manifest, f, indent=2)
 
-    stage_times['artifact_generation'] = time.perf_counter() - t0
-
     # -----------------------------------------------------------------
-    # 8. VALIDATION & SUMMARY
+    # 9. VALIDATION & SUMMARY
     # -----------------------------------------------------------------
     print("\n[8/11] Validation summary...")
     print("  Run tests separately: python -m pytest tests/ -v")

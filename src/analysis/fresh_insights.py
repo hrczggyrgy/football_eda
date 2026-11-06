@@ -28,6 +28,39 @@ from features.engineer import SEASON_ORDER
 TEAM_SEASON_GROUP = ['Div', 'Team', 'Season']
 ENGLISH_LEAGUES = ['E0', 'E1', 'E2', 'E3']
 
+# Columns that uniquely identify a fixture (match) across the dataset.
+MATCH_KEY = ['Div', 'Season', 'Date', 'Team_A', 'Team_B']
+
+
+def _canonical_team_pair(df: pl.DataFrame, home: str, away: str) -> Tuple[pl.Expr, pl.Expr]:
+    """Express a home/away team pair in canonical (sorted) order.
+
+    Both perspective rows of the same fixture (home team vs away team, and
+    away team vs home team) then map to the same fixture key, so a match-level
+    attribute such as Referee can be joined without duplication or ambiguity.
+    """
+    team_a = pl.when(pl.col(home) <= pl.col(away)).then(pl.col(home)).otherwise(pl.col(away)).alias('Team_A')
+    team_b = pl.when(pl.col(home) <= pl.col(away)).then(pl.col(away)).otherwise(pl.col(home)).alias('Team_B')
+    return team_a, team_b
+
+
+def _referee_match_lookup(eng_master: pl.DataFrame) -> pl.DataFrame:
+    """Build a match-level (one row per fixture) Referee lookup.
+
+    The fixture key is (Div, Season, Date, HomeTeam, AwayTeam) with team names
+    in canonical order, so multiple matches in the same league on the same
+    date are distinguished and each fixture resolves to exactly one referee.
+    If a fixture somehow lists more than one referee, the first occurrence is
+    kept.
+    """
+    team_a, team_b = _canonical_team_pair(eng_master, 'HomeTeam', 'AwayTeam')
+    return (
+        eng_master
+        .with_columns([team_a, team_b])
+        .select(MATCH_KEY + ['Referee'])
+        .unique(subset=MATCH_KEY, keep='first')
+    )
+
 
 def _pearsonr(x: np.ndarray, y: np.ndarray) -> Tuple[float, float, int]:
     m = (~np.isnan(x)) & (~np.isnan(y))
@@ -205,16 +238,55 @@ def analyze_match_tempo(team_matches: pl.DataFrame, master: pl.DataFrame,
         (pl.col('FTHG') - pl.col('FTAG')).alias('Goal_Diff'),
     ])
 
-    # Tempo quintiles
-    q = master.select('Total_Shots').to_series().to_numpy()
-    bounds = [float(np.quantile(q, k / 5)) for k in range(1, 5)]
+    # Tempo quintiles. Null shot values are dropped before the quantile is
+    # computed: Polars->NumPy converts null integers to NaN and NumPy's
+    # ordinary quantile() propagates NaNs, which would make every boundary
+    # NaN and classify every match as ``Very_High``.
+    q = (
+        master.select(pl.col('Total_Shots').drop_nulls())
+        .to_series()
+        .to_numpy()
+    )
+    bounds = [float(b) for b in np.quantile(q, [0.2, 0.4, 0.6, 0.8])]
+    if not np.all(np.isfinite(bounds)):
+        raise ValueError("Tempo quantile bounds are not finite; check Total_Shots for nulls.")
+
     master = master.with_columns(
-        pl.when(pl.col('Total_Shots') <= bounds[0]).then(pl.lit('Very_Low'))
+        pl.when(pl.col('Total_Shots').is_null()).then(pl.lit('Missing'))
+        .when(pl.col('Total_Shots') <= bounds[0]).then(pl.lit('Very_Low'))
         .when(pl.col('Total_Shots') <= bounds[1]).then(pl.lit('Low'))
         .when(pl.col('Total_Shots') <= bounds[2]).then(pl.lit('Medium'))
         .when(pl.col('Total_Shots') <= bounds[3]).then(pl.lit('High'))
         .otherwise(pl.lit('Very_High')).alias('Tempo_Quintile')
     )
+
+    # Validate that every tempo group actually contains observations.
+    tempo_group_counts = (
+        master.group_by('Tempo_Quintile').agg(pl.len().alias('N')).sort('Tempo_Quintile')
+    )
+    present = set(tempo_group_counts.select('Tempo_Quintile').to_series().to_list())
+    expected_groups = {'Very_Low', 'Low', 'Medium', 'High', 'Very_High', 'Missing'}
+    empty_groups = sorted(expected_groups - present)
+    if empty_groups:
+        print(f"  [tempo] warning: no observations in tempo groups: {empty_groups}")
+    results['tempo_group_counts'] = tempo_group_counts
+
+    # Documented missing-data policy: shots-below-shots-on-target is
+    # statistically impossible, so affected fixtures are excluded from tempo
+    # analysis rather than silently retained (see audit_data_quality).
+    impossible = master.filter(
+        pl.col('Total_Shots').is_not_null()
+        & pl.col('Total_SOT').is_not_null()
+        & (pl.col('Total_Shots') < pl.col('Total_SOT'))
+    )
+    results['tempo_excluded_impossible_shots'] = int(impossible.height)
+    if impossible.height:
+        # Null Total_Shots rows stay in the ``Missing`` tempo group; only
+        # genuinely impossible shots-below-SOT fixtures are excluded.
+        master = master.filter(
+            pl.col('Total_Shots').is_null()
+            | (pl.col('Total_Shots') >= pl.col('Total_SOT'))
+        )
 
     tempo_outcomes = master.group_by('Tempo_Quintile').agg([
         pl.len().alias('N'),
@@ -590,9 +662,24 @@ def analyze_referee_characteristics(master: pl.DataFrame, team_matches: pl.DataF
     tm_eng = tm_eng.with_columns([
         (pl.col('Div') + pl.lit('_') + pl.col('Season')).alias('LeagueSeason'),
         pl.when(pl.col('Venue') == 'Home').then(1).otherwise(0).cast(pl.Int8).alias('Venue_Code'),
-    ])
-    ref_lookup = eng_master.select(['Div', 'Season', 'Date', 'Referee']).unique()
-    tm_eng = tm_eng.join(ref_lookup, on=['Div', 'Season', 'Date'], how='left')
+    ] + list(_canonical_team_pair(tm_eng, 'Team', 'Opponent')))
+
+    # Match-level referee join: key on the full fixture, not just date.
+    # Multiple matches in one league can share a date with different referees;
+    # joining on (Div, Season, Date) alone would associate a team observation
+    # with several referees and inflate/contaminate the regression dataset.
+    ref_lookup = _referee_match_lookup(eng_master)
+
+    n_before = tm_eng.height
+    tm_eng = tm_eng.join(ref_lookup, on=MATCH_KEY, how='left')
+    if tm_eng.height != n_before:
+        raise ValueError(
+            f"Referee join changed the team-match row count: {n_before} -> "
+            f"{tm_eng.height}; the fixture key {MATCH_KEY} is not unique"
+        )
+    unmatched = int(tm_eng.select(pl.col('Referee').null_count()).to_series()[0])
+    if unmatched:
+        print(f"  [referee] warning: {unmatched} team-match observations unmatched to a referee")
 
     valid = tm_eng.select(pl.col('Referee').is_not_null() & pl.col('Yellow').is_not_null() &
                           pl.col('Fouls').is_not_null() & pl.col('Points').is_not_null() &
