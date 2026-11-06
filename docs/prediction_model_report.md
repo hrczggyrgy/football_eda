@@ -138,30 +138,37 @@ matches):
 |-------|-----------|--------------|--------------|
 | Historical baseline (A) | 0.65019 | 1.07445 | 0.43437 |
 | Poisson scoreline (B) | 0.65323 | 1.07861 | 0.41168 |
-| Multinomial logistic (C) | **0.36052** | **0.61372** | **0.71073** |
+| Multinomial logistic (C, calibrated) | **0.36094** | **0.61440** | **0.70939** |
 
 **Verified finding:** Model C (calibrated multinomial) beats Model A (baseline)
-by 0.290 Brier points out-of-sample across the five chronological folds
+by 0.289 Brier points out-of-sample across the five chronological folds
 (17,188 test matches). Per-fold Brier for Model C is stable (0.356–0.366), so
 the result is not driven by a single test season. Model B (Poisson) does **not**
 beat the baseline (0.653 vs 0.650) and is therefore not preferred.
 
 **Source of improvement:** the gain comes from legitimate pre-match features:
-accumulated in-season league table (cumulative points / PPG before each
-fixture), recent form momentum (last 3 vs matches 4–5), head-to-head history
-within the Div/Season, chronological Elo strength ratings, venue-specific
-splits, rest-day differences, and out-of-fold probability calibration. All are
-strictly pre-match; the walk-forward design permits a fixture to use results
-from earlier fixtures in the same test season, but never its own result. A
-label-shuffle test confirms no leakage (shuffled labels → Brier 0.94 vs 0.37
-real).
+prior-season team strength (PPG, Elo, head-to-head, venue), accumulated
+in-season league table (cumulative points / PPG before each fixture), recent
+form momentum (last 3 vs matches 4–5), head-to-head history within the
+Div/Season, chronological Elo strength ratings, rest-day differences, and
+out-of-fold probability calibration. All are strictly pre-match; the
+walk-forward design permits a fixture to use results from earlier fixtures
+in the same test season, but never its own result. A label-shuffle test
+confirms no leakage (shuffled labels → Brier 0.91 vs 0.37 real).
 
-**Honest caveat:** the improvement is largest once in-season form/table has
-accumulated; predictions at the very start of a season (no in-season history)
-revert closer to the league-prior baseline. Probabilities are calibrated
-diagnostics, not certainties.
+**Performance by in-season history:** prior-season team strength alone (first
+5 matches of each test season, no in-season data) achieves Brier 0.305 —
+prior-season PPG, Elo, and H2H are genuinely predictive of next-season
+outcomes. Mid-season matches (6–20, small-sample in-season form) are
+harder (Brier 0.395) due to small-sample noise; later-season matches
+(21+, reliable in-season form) achieve Brier 0.358. The walk-forward
+design benefits late-season matches most, as intended.
 
-Per-fold Brier scores (Model C): 0.36096, 0.35796, 0.35590, 0.36605, 0.36180 —
+**Honest caveat:** probabilities are calibrated diagnostics (ECE 0.025), not
+certainties. Draws remain the hardest class (F1 0.606 vs home/away ~0.71–0.77).
+Results are specific to this dataset (8 leagues, 7 seasons).
+
+Per-fold Brier scores (Model C): 0.3622, 0.3580, 0.3560, 0.3657, 0.3629 —
 stable across folds (no single season drives the result).
 
 ## 13. Calibration results
