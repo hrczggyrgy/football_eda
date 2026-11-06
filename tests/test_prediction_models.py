@@ -141,3 +141,34 @@ def test_missing_columns_graceful():
     m = HistoricalBaseline(); m.fit(None, master)
     res = m.predict(master)
     assert res.fitted
+
+
+# ---------------------------------------------------------------------------
+# F03: Poisson defensive-direction regression tests
+# ---------------------------------------------------------------------------
+def test_poisson_defence_direction_monotonic():
+    # Higher conceded rate (weak defence, factor > 1) must make the opponent
+    # more likely to score (higher lambda), not less.
+    m = PoissonModel()
+    m.league_effects = {"E0": 1.3}
+    m.league_home_advantage = {"E0": 0.0}
+    m.team_attack = {"E0|Home": 1.0, "E0|Away": 1.0}
+    m.team_defense = {"E0|Home": 1.0, "E0|Away": 1.0}
+
+    base_h, base_a = m._lambda("E0", "Home", "Away")
+
+    # Away team concedes more (defence factor up) -> home lambda should rise.
+    m.team_defense["E0|Away"] = 2.0
+    weak_away_h, _ = m._lambda("E0", "Home", "Away")
+    assert weak_away_h > base_h, (weak_away_h, base_h)
+
+    # Reset and test the other direction.
+    m.team_defense["E0|Away"] = 1.0
+    m.team_defense["E0|Home"] = 2.0
+    _, weak_home_a = m._lambda("E0", "Home", "Away")
+    assert weak_home_a > base_a, (weak_home_a, base_a)
+
+    # Lower defence factor (strong defence, < 1) reduces opponent scoring.
+    m.team_defense["E0|Home"] = 0.5
+    _, strong_home_a = m._lambda("E0", "Home", "Away")
+    assert strong_home_a < base_a, (strong_home_a, base_a)

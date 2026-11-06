@@ -399,9 +399,12 @@ class PoissonModel:
         lg = self.league_effects.get(div, self.pooled_home_rate)
         ha = self.league_home_advantage.get(div, self.home_advantage)
 
-        # log-linear: lambda = league_rate * att * (1/def) * home_adv_factor
-        home_lambda = lg * att_h * (1.0 / max(def_a, 0.1)) * np.exp(ha * 0.15)
-        away_lambda = lg * att_a * (1.0 / max(def_h, 0.1)) * np.exp(-ha * 0.15)
+        # log-linear: lambda = league_rate * att * opp_defence * home_adv_factor
+        # defence factor = goals conceded per game relative to league. A team
+        # that concedes more (weak defence, factor > 1) should make its
+        # opponent more likely to score, so we multiply by the conceding rate.
+        home_lambda = lg * att_h * max(def_a, 0.1) * np.exp(ha * 0.15)
+        away_lambda = lg * att_a * max(def_h, 0.1) * np.exp(-ha * 0.15)
         return float(home_lambda), float(away_lambda)
 
     def predict(self, matches: pl.DataFrame) -> ModelResult:
@@ -545,7 +548,7 @@ class MultinomialModel:
         scaler = StandardScaler()
         Xs = scaler.fit_transform(X)
         model = LogisticRegression(
-            penalty="l2", C=C, solver="lbfgs", max_iter=self.max_iter,
+            C=C, solver="lbfgs", max_iter=self.max_iter,
             random_state=self.seed,
         )
         model.fit(Xs, y)
@@ -613,7 +616,7 @@ class MultinomialModel:
         self.scaler = StandardScaler()
         Xs = self.scaler.fit_transform(X)
         self.model = LogisticRegression(
-            penalty="l2", C=best_C, solver="lbfgs", max_iter=self.max_iter,
+            C=best_C, solver="lbfgs", max_iter=self.max_iter,
             random_state=self.seed,
         )
         self.model.fit(Xs, y)
@@ -666,7 +669,7 @@ class MultinomialModel:
             else:
                 # Platt scaling: multinomial logistic regression on raw probs.
                 cal = LogisticRegression(
-                    penalty="l2", C=1.0, solver="lbfgs", max_iter=self.max_iter,
+                    C=1.0, solver="lbfgs", max_iter=self.max_iter,
                     random_state=self.seed,
                 )
                 cal.fit(O, Y)
@@ -919,7 +922,7 @@ class EnsembleModel:
                 scaler = StandardScaler()
                 X_train_s = scaler.fit_transform(X_train)
                 from sklearn.linear_model import LogisticRegression
-                model = LogisticRegression(penalty="l2", C=1.0, solver="lbfgs",
+                model = LogisticRegression(C=1.0, solver="lbfgs",
                                            max_iter=self.multinomial.max_iter,
                                            random_state=self.seed)
                 model.fit(X_train_s, y_train)

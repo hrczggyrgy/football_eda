@@ -6,6 +6,8 @@ fixtures, that result-free CSV input is accepted, fallback treatment for
 unknown teams/leagues is recorded, and output probabilities sum to 1.
 """
 
+from datetime import date
+
 import csv
 import numpy as np
 import polars as pl
@@ -17,7 +19,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from data.load_data import build_master_dataset, build_team_match_dataset, CORE_COLS
-from prediction.inference import PredictionBundle, predict_fixture, predict_from_csv
+from prediction.inference import (
+    PredictionBundle, predict_fixture, predict_from_csv, _season_from_date,
+)
 
 
 def _small_master():
@@ -100,10 +104,10 @@ def test_predict_fixture_unknown_league_recorded():
     assert abs(p.outcome_probs_sum() - 1.0) < 1e-6
 
 
-def test_predict_from_csv_no_results_required():
+def test_predict_from_csv_no_results_required(tmp_path):
     bundle, master, tm = _bundle()
-    csv_path = Path("/tmp/opencode/inference_test.csv")
-    out_path = Path("/tmp/opencode/inference_test_out.csv")
+    csv_path = Path(tmp_path) / "inference_test.csv"
+    out_path = Path(tmp_path) / "inference_test_out.csv"
     with open(csv_path, "w", newline="") as f:
         f.write("Date,Div,HomeTeam,AwayTeam\n")
         f.write("2021-09-13,E0,T0,T1\n")
@@ -119,9 +123,9 @@ def test_predict_from_csv_no_results_required():
     assert "outcome_probs_sum" in header
 
 
-def test_predict_from_csv_missing_columns_raises():
+def test_predict_from_csv_missing_columns_raises(tmp_path):
     bundle, master, tm = _bundle()
-    csv_path = Path("/tmp/opencode/bad.csv")
+    csv_path = Path(tmp_path) / "bad.csv"
     with open(csv_path, "w", newline="") as f:
         f.write("Date,HomeTeam,AwayTeam\n")  # missing Div
     with pytest.raises(ValueError):
@@ -136,3 +140,37 @@ def test_bundle_save_load_roundtrip(tmp_path):
     assert loaded.model_name == bundle.model_name
     assert loaded.cutoff_date == bundle.cutoff_date
     assert loaded.feature_names == bundle.feature_names
+
+
+# ---------------------------------------------------------------------------
+# F04: season assignment regression tests
+# ---------------------------------------------------------------------------
+def test_season_from_date_mapping():
+    # On/after 1 August -> season starting that calendar year.
+    assert _season_from_date(date(2021, 9, 10)) == "2122"
+    assert _season_from_date(date(2021, 8, 1)) == "2122"
+    assert _season_from_date(date(2021, 7, 31)) == "2021"
+    # Early calendar year -> prior season.
+    assert _season_from_date(date(2022, 3, 15)) == "2122"
+    assert _season_from_date(date(2026, 10, 5)) == "2627"
+
+
+def test_predict_fixture_uses_supplied_season_not_latest_history():
+    bundle, master, tm = _bundle()
+    # Single-season history (2122) so feature building stays on one season.
+    # A fixture dated within the history season keeps its actual season.
+    p = predict_fixture(
+        "E0", "2021-09-13", "T0", "T1", bundle, master, tm,
+        cutoff_date="2021-09-12", season="2122",
+    )
+    assert p.date == "2021-09-13"
+    assert abs(p.outcome_probs_sum() - 1.0) < 1e-6
+    assert p.data_quality_status != "fallback_unknown_team_or_league"
+
+    # Derived season (no explicit season) for an in-history date resolves to
+    # that date's season, not blindly the latest history season.
+    p2 = predict_fixture(
+        "E0", "2021-09-13", "T0", "T1", bundle, master, tm,
+        cutoff_date="2021-09-12",
+    )
+    assert abs(p2.outcome_probs_sum() - 1.0) < 1e-6

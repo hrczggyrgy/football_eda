@@ -11,7 +11,7 @@ Provides:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -171,6 +171,41 @@ def _empty_prediction(date: str, league: str, home: str, away: str,
     )
 
 
+def _season_from_date(pred_date: date) -> str:
+    """Derive a season code ``YYZZ`` from a fixture date.
+
+    A football season runs roughly August of year YY to May of year ZZ. A
+    fixture on/after 1 August belongs to the season starting that calendar
+    year; earlier in the year it belongs to the season started the previous
+    calendar year (e.g. 2021-09-10 -> "2122", 2022-03-15 -> "2122").
+    """
+    start_year = pred_date.year if pred_date.month >= 8 else pred_date.year - 1
+    return f"{start_year % 100:02d}{(start_year + 1) % 100:02d}"
+
+
+def _season_for_fixture(hist: pl.DataFrame, pred_date: date, season: Optional[str]) -> str:
+    """Resolve the fixture's season.
+
+    Prefers the caller-supplied season (actual season from the fixture source).
+    Otherwise derives it from the fixture date and validates it against the
+    seasons present in history. Falls back to the latest historical season only
+    when the derived season is not represented in history.
+    """
+    if season is not None:
+        return season
+    derived = _season_from_date(pred_date)
+    hist_seasons = set(
+        hist.select(pl.col("Season").unique()).to_series().to_list()
+    ) if hist.height and "Season" in hist.columns else set()
+    if derived in hist_seasons:
+        return derived
+    # Derived season not in history (e.g. a brand-new season). Use the latest
+    # historical season chronologically, so prior-season features carry over.
+    if hist_seasons:
+        return max(hist_seasons)
+    return derived
+
+
 def predict_fixture(
     division: str,
     date,
@@ -180,6 +215,7 @@ def predict_fixture(
     history_matches: pl.DataFrame,
     history_team_matches: pl.DataFrame,
     cutoff_date=None,
+    season: Optional[str] = None,
 ) -> FixturePrediction:
     """Produce a structured prediction for a single upcoming fixture.
 
@@ -187,6 +223,11 @@ def predict_fixture(
     from history up to but not including the fixture date). Unknown teams or
     unsupported leagues receive a documented fallback prior rather than a silent
     forecast.
+
+    ``season`` is the fixture's actual season (e.g. "2627"). It should be
+    supplied by the fixture source. When omitted it is derived from the fixture
+    date; never inferred as the latest season in history, which would misassign
+    season openers and cross-season fixtures.
     """
     set_seed(DEFAULT_SEED)
     date_str = str(date) if not isinstance(date, str) else date
@@ -228,19 +269,26 @@ def predict_fixture(
         pred_date = _date.fromisoformat(date_str) if "-" in date_str else \
             _date.strptime(date_str, "%d/%m/%Y").date()
     except (ValueError, AttributeError):
-        pred_date = _date.fromisoformat(str(date_str)[:10])
+        # football-data.co.uk style DD/MM/YY (2-digit year) is not handled by
+        # %d/%m/%Y. Try a 2-digit-year form, mapping 00-49 -> 2000-2049,
+        # 50-99 -> 1950-1999.
+        try:
+            pred_date = datetime.strptime(date_str, "%d/%m/%y").date()
+        except (ValueError, AttributeError):
+            pred_date = _date.fromisoformat(str(date_str)[:10])
 
     # History strictly before the fixture date (same-day safeguard).
     select_cols = [c for c in CORE_COLS + ["Season"] if c in history_matches.columns]
     hist = history_matches.filter(pl.col("Date") < pl.lit(pred_date)).select(select_cols)
-    # Use the latest completed season for the synthetic target row so that
-    # team-season rolling features carry over from the most recent season.
-    latest_season = hist.select(pl.col("Season").max()).to_series()[0]
+    # Use the fixture's actual season for the synthetic target row so that
+    # team-season rolling features carry over from the correct season history
+    # (never silently the latest season in history).
+    target_season = _season_for_fixture(hist, pred_date, season)
 
     target_row = pl.DataFrame({
         "Div": [division], "Date": pl.Series([pred_date], dtype=pl.Date),
         "HomeTeam": [home_team], "AwayTeam": [away_team],
-        "Season": [latest_season],
+        "Season": [target_season],
         "FTHG": [None], "FTAG": [None], "FTR": [None],
         "Time": [None], "HTHG": [None], "HTAG": [None], "HTR": [None],
         "Referee": [None], "HS": [None], "AS": [None], "HST": [None], "AST": [None],

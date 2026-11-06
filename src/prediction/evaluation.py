@@ -44,7 +44,9 @@ def poisson_deviance(actual: np.ndarray, lam: np.ndarray) -> float:
     actual = np.clip(actual, 0, None)
     valid = np.isfinite(actual) & np.isfinite(lam)
     a = actual[valid]; l = lam[valid]
-    term = np.where(a > 0, a * np.log(a / l), 0.0)
+    term = np.zeros_like(a)
+    mask = a > 0
+    term[mask] = a[mask] * np.log(a[mask] / l[mask])
     dev = 2.0 * np.sum(l - a + term)
     return float(dev / a.shape[0])
 

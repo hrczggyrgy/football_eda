@@ -61,6 +61,11 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+filterwarnings = [
+    # joblib/NumPy 2.5 environment incompatibility in joblib's internals;
+    # not code we own. Ignore only this specific deprecation.
+    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
+]
 markers = [
     "perf: performance regression tests (timing-based, run with -m perf)",
 ]

@@ -15,22 +15,26 @@ import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import polars as pl
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from prediction.inference import PredictionBundle, predict_fixture
+from prediction.inference import PredictionBundle, predict_fixture, _season_from_date
 from data.load_data import build_master_dataset, build_team_match_dataset, CORE_COLS
 from prediction.evaluation import outcome_metrics
+from prediction.calibration import brier_score_multiclass
 
 BUNDLE_PATH = Path("output/predictions/models/model_bundle.joblib")
 HISTORY_SEASONS = ["1920", "2021", "2122", "2223", "2324", "2425", "2526", "2627"]
 HISTORY_LEAGUES = ["E0", "E1", "E2", "E3", "SP1", "D1", "I1", "F1"]
 
+DEFAULT_RESULTS_CSV = Path("latest_results_2627.csv")
 
-def main():
+
+def main(results_csv: Optional[Path] = None):
     # ---- Load trained model bundle ----
     if not BUNDLE_PATH.exists():
         print(f"ERROR: Model bundle not found at {BUNDLE_PATH}")
@@ -40,6 +44,13 @@ def main():
     bundle = PredictionBundle.load(BUNDLE_PATH)
     print(f"Loaded model bundle: {bundle.model_name} (cutoff {bundle.cutoff_date})")
 
+    bundle_cutoff = None
+    if bundle.cutoff_date:
+        try:
+            bundle_cutoff = datetime.strptime(str(bundle.cutoff_date)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            bundle_cutoff = None
+
     # ---- Load historical training data ----
     DATA_DIR = Path(".")
     master = build_master_dataset(DATA_DIR, HISTORY_LEAGUES, HISTORY_SEASONS, usecols=CORE_COLS)
@@ -47,47 +58,72 @@ def main():
     print(f"History: {master.height} matches across {len(HISTORY_SEASONS)} seasons")
 
     # ---- Load 2627 results CSV ----
-    csv_text = Path("/tmp/opencode/latest_results_2627.txt").read_text()
+    csv_path = Path(results_csv) if results_csv is not None else DEFAULT_RESULTS_CSV
+    if not csv_path.exists():
+        print(f"ERROR: Results CSV not found at {csv_path}")
+        print("Pass the 2627 results CSV path as an argument, e.g.:")
+        print("  python validate_2627.py /path/to/latest_results_2627.csv")
+        sys.exit(1)
+
+    csv_text = csv_path.read_text()
     lines = csv_text.strip().split("\n")
     header = lines[0].split(",")
     rows = [l.split(",") for l in lines[1:] if l.strip()]
 
     # Map columns we need
     col_idx = {name: i for i, name in enumerate(header)}
-    needed = ["Div", "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR", "HXG", "AXG"]
+    needed = ["Div", "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR"]
     missing = [c for c in needed if c not in col_idx]
     if missing:
         print(f"WARNING: CSV missing columns: {missing}")
 
-    print(f"\nLoaded {len(rows)} fixtures from 2627 results CSV")
+    print(f"\nLoaded {len(rows)} fixtures from {csv_path}")
 
     # ---- Predict each fixture and compare ----
     results = []
+    n_rejected_cutoff = 0
     for row in rows:
         div = row[col_idx["Div"]]
         date_str = row[col_idx["Date"]]
         home = row[col_idx["HomeTeam"]]
         away = row[col_idx["AwayTeam"]]
 
-        # Actual result
-        fthg = row[col_idx["FTHG"]]
-        ftag = row[col_idx["FTAG"]]
-        ftr = row[col_idx["FTR"]]
-        actual_home_goals = int(fthg) if fthg.strip() else None
-        actual_away_goals = int(ftag) if ftag.strip() else None
-        actual_outcome = ftr.strip() if ftr.strip() else None
+        # Parse fixture date and resolve its actual season.
+        try:
+            pred_date = datetime.strptime(date_str.strip(), "%d/%m/%y").date()
+        except ValueError:
+            try:
+                pred_date = datetime.strptime(date_str.strip(), "%d/%m/%Y").date()
+            except ValueError:
+                pred_date = date.fromisoformat(date_str.strip()[:10])
+        season = _season_from_date(pred_date)
 
-        # Predict using only history before this fixture date
+        # F05: never evaluate a fixture at or before the bundle's training
+        # cutoff -- it is not out-of-sample for a future-trained bundle.
+        if bundle_cutoff is not None and pred_date <= bundle_cutoff:
+            n_rejected_cutoff += 1
+            continue
+
+        # Actual result
+        fthg = row[col_idx["FTHG"]] if "FTHG" in col_idx else ""
+        ftag = row[col_idx["FTAG"]] if "FTAG" in col_idx else ""
+        ftr = row[col_idx["FTR"]] if "FTR" in col_idx else ""
+        actual_home_goals = int(fthg) if str(fthg).strip() else None
+        actual_away_goals = int(ftag) if str(ftag).strip() else None
+        actual_outcome = str(ftr).strip() if str(ftr).strip() else None
+
+        # Predict using only history before this fixture date.
         try:
             pred = predict_fixture(
                 division=div,
-                date=date_str,
+                date=date_str.strip(),
                 home_team=home,
                 away_team=away,
                 bundle=bundle,
                 history_matches=master,
                 history_team_matches=team_matches,
                 cutoff_date=bundle.cutoff_date,
+                season=season,
             )
         except Exception as e:
             results.append({
@@ -143,15 +179,17 @@ def main():
     n_correct = sum(1 for r in valid if r["correct"])
     accuracy = n_correct / n_valid if n_valid else 0.0
 
-    # Brier score (multiclass)
-    brier_sum = 0.0
-    for r in valid:
-        y_true = ["H", "D", "A"].index(r["actual_outcome"])
-        p = [r["home_win_prob"], r["draw_prob"], r["away_win_prob"]]
-        for k in range(3):
-            yk = 1.0 if k == y_true else 0.0
-            brier_sum += (p[k] - yk) ** 2
-    brier = brier_sum / (n_valid * 3) if n_valid else float("nan")
+    # Brier score (multiclass) on the SAME scale as the main evaluation:
+    # mean sum over classes of (p - y)^2, not divided by n*3.
+    probs_arr = np.asarray([
+        [r["home_win_prob"], r["draw_prob"], r["away_win_prob"]]
+        for r in valid
+    ], dtype=np.float64)
+    outcomes_arr = np.asarray([
+        ["H", "D", "A"].index(r["actual_outcome"])
+        for r in valid
+    ], dtype=np.int64)
+    brier = brier_score_multiclass(probs_arr, outcomes_arr) if n_valid else float("nan")
 
     # Log loss (clipped)
     eps = 1e-15
@@ -233,4 +271,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    csv_arg = Path(sys.argv[1]) if len(sys.argv) > 1 else None
+    main(results_csv=csv_arg)

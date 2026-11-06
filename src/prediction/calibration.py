@@ -146,7 +146,7 @@ def calibration_intercept_slope(probs: np.ndarray, outcomes: np.ndarray,
         return float("nan"), float("nan")
     logit = np.log(p / (1.0 - p)).reshape(-1, 1)
     # Fit logistic regression of y on logit(p); intercept & slope of calibration.
-    model = LogisticRegression(penalty=None, solver="lbfgs")
+    model = LogisticRegression(solver="lbfgs")
     model.fit(logit, y)
     # Map: P(y=1) = sigmoid(intercept + slope * logit(p))
     intercept = float(model.intercept_[0])

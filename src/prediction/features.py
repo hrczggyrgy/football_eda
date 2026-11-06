@@ -26,6 +26,7 @@ Feature availability matrix (relative to a target match at time T):
 
 from __future__ import annotations
 
+import warnings
 from typing import List, Optional
 
 import polars as pl
@@ -45,6 +46,35 @@ FORM_WINDOWS = (3, 5, 10)
 EWMA_HALF_LIFE_MATCHES = 5
 # Shrinkage target exposure count (pseudo-observations).
 SHRINKAGE_K = 5.0
+
+# Polars cannot verify sortedness of the as-of key within `by=` groups and
+# emits a UserWarning even when the caller has sorted explicitly. Since every
+# call site below sorts by the by-keys plus the as-of key before joining, the
+# join is correct; we suppress this known-safe warning locally.
+def _asof_join_safe(
+    left: pl.DataFrame,
+    right: pl.DataFrame,
+    left_on: str,
+    right_on: str,
+    by_left: List[str],
+    by_right: List[str],
+    **kwargs,
+) -> pl.DataFrame:
+    left_sorted = left.sort(by_left + [left_on])
+    right_sorted = right.sort(by_right + [right_on])
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Sortedness of columns cannot be checked when 'by' groups provided",
+        )
+        return left_sorted.join_asof(
+            right_sorted,
+            left_on=left_on,
+            right_on=right_on,
+            by_left=by_left,
+            by_right=by_right,
+            **kwargs,
+        )
 
 
 def _null_cols(df: pl.DataFrame, names: List[str]) -> pl.DataFrame:
@@ -211,22 +241,24 @@ def build_pre_match_features(team_matches: pl.DataFrame) -> pl.DataFrame:
 def _add_prior_season_strength(df: pl.DataFrame) -> pl.DataFrame:
     """Add prior-season PPG as a pre-match prior.
 
-    Carries over prior-season PPG across divisions (for promotion/relegation)
-    with division strength adjustment. Teams changing divisions get their
-    previous season PPG adjusted by the relative strength of the two divisions.
+    Uses only completed prior-season information. The prior-season PPG comes
+    from the same team's previous season (consecutive seasons only); teams
+    without prior-season data fall back to their division's prior-season
+    average PPG. Crucially, no current-season full-data average is ever used,
+    so this feature is safe at kickoff of the first match of a season.
     """
     out = df.sort(["Div", "Team", "Season", "Date"])
-    season_num = pl.col("Season").replace(SEASON_ORDER).cast(pl.Int64).alias("Season_Num")
 
-    # Team-season final PPG (full-season aggregate, used only as prior for
-    # the NEXT season - permitted).
+    # Team-season final PPG (full-season aggregate, used only as prior for the
+    # NEXT season - permitted).
     ts = out.group_by(TEAM_SEASON_GROUP).agg(
         pl.col("Points").mean().alias("Final_PPG"),
         pl.len().alias("Matches"),
     )
-    ts = ts.with_columns(season_num.alias("Season_Num")).sort(["Team", "Season_Num"])
+    season_num = pl.col("Season").replace(SEASON_ORDER).cast(pl.Int64).alias("Season_Num")
+    ts = ts.with_columns(season_num).sort(["Team", "Season_Num"])
 
-    # Previous season's Final_PPG for the same team (any division).
+    # Previous season's Final_PPG for the same team (consecutive seasons only).
     ts = ts.with_columns([
         pl.col("Final_PPG").shift(1).over("Team").alias("Prev_Final_PPG"),
         pl.col("Season_Num").shift(1).over("Team").alias("Prev_Season_Num"),
@@ -234,74 +266,36 @@ def _add_prior_season_strength(df: pl.DataFrame) -> pl.DataFrame:
         (pl.col("Season_Num") - pl.col("Prev_Season_Num") == 1).alias("Consecutive")
     )
 
-    # Division strength adjustment: average PPG in each division per season.
-    # Used to adjust prior-season PPG when a team changes divisions.
+    # Division strength: average PPG per (Div, Season), shifted so season S
+    # holds season S-1's division average. Strictly prior-season information.
     div_strength = out.group_by(["Div", "Season"]).agg(
         pl.col("Points").mean().alias("Div_Season_PPG")
     ).sort(["Div", "Season"]).with_columns(
-        pl.col("Div_Season_PPG").shift(1).over("Div").alias("Prev_Div_Season_PPG")
-    ).select(["Div", "Season", "Div_Season_PPG", "Prev_Div_Season_PPG"])
+        pl.col("Div_Season_PPG").shift(1).over("Div").alias("Prior_Div_Season_PPG")
+    ).select(["Div", "Season", "Prior_Div_Season_PPG"])
 
-    # Join prior season PPG onto current season.
+    # Prior season PPG for the same team (any division), only when consecutive.
     prior_lookup = ts.filter(pl.col("Consecutive")).select([
         pl.col("Team"), pl.col("Season"), pl.col("Prev_Final_PPG"),
-        pl.col("Prev_Season_Num").alias("Prev_Season"),
     ])
 
-    # Join prior season division for division change detection.
-    prior_div = ts.select([
-        pl.col("Team"), pl.col("Season").alias("Prev_Season"),
-        pl.col("Div").alias("Prev_Div"),
-    ]).with_columns(
-        pl.col("Prev_Season").cast(pl.Int64)
-    )
-
-    prior_lookup = prior_lookup.join(prior_div, on=["Team", "Prev_Season"], how="left",
-                                     maintain_order="left")
-
-    out = out.join(prior_lookup, left_on=["Team", "Season"],
-                   right_on=["Team", "Season"], how="left",
+    out = out.join(prior_lookup, on=["Team", "Season"], how="left",
                    maintain_order="left")
 
-    # Join prior division for division change detection.
-    out = out.join(prior_div.with_columns(
-        pl.col("Prev_Season").cast(pl.Utf8)
-    ), left_on=["Team", "Season"],
-                   right_on=["Team", "Prev_Season"], how="left",
-                   maintain_order="left")
-
-    # Compute division strength adjustment for promoted/relegated teams.
+    # Current division's prior-season PPG, used as fallback for teams without
+    # prior-season data (e.g. promoted teams). Never the current season's
+    # full-data average.
     out = out.join(div_strength, on=["Div", "Season"], how="left",
                    maintain_order="left")
-    out = out.join(div_strength.with_columns(
-        pl.col("Season").cast(pl.Int64)
-    ).rename({
-        "Div": "Prev_Div", "Season": "Prev_Season",
-    }), on=["Prev_Div", "Prev_Season"], how="left",
-                   maintain_order="left")
 
-    # Compute adjusted prior PPG: regress toward new division mean.
     out = out.with_columns([
-        pl.when(pl.col("Prev_Final_PPG").is_not_null() &
-                pl.col("Prev_Div_Season_PPG").is_not_null() &
-                pl.col("Div_Season_PPG").is_not_null())
-        .then(
-            pl.col("Prev_Final_PPG") *
-            (pl.col("Div_Season_PPG") / pl.col("Prev_Div_Season_PPG"))
-        ).otherwise(pl.col("Prev_Final_PPG"))
+        pl.when(pl.col("Prev_Final_PPG").is_not_null())
+        .then(pl.col("Prev_Final_PPG"))
+        .otherwise(pl.col("Prior_Div_Season_PPG"))
         .alias("Prior_Season_PPG")
     ])
 
-    # For teams with no prior season data, use historical league average.
-    out = out.with_columns(
-        pl.when(pl.col("Prior_Season_PPG").is_null())
-        .then(pl.col("Div_Season_PPG"))
-        .otherwise(pl.col("Prior_Season_PPG"))
-        .alias("Prior_Season_PPG")
-    )
-
-    out = out.drop(["Prev_Final_PPG", "Prev_Season",
-                    "Prev_Div_Season_PPG", "Div_Season_PPG"])
+    out = out.drop(["Prev_Final_PPG", "Prior_Div_Season_PPG"])
     return out
 
 
@@ -479,8 +473,8 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
     right = left_a.clone()
     # As-of join on date within pair: for each encounter, find earlier encounters
     # of the same pair in the same Div/Season.
-    joined = left_a.join_asof(
-        right,
+    joined = _asof_join_safe(
+        left_a, right,
         left_on="Date", right_on="Date",
         by_left=["Div", "Season", "pair_a", "pair_b"],
         by_right=["Div", "Season", "pair_a", "pair_b"],
@@ -488,11 +482,29 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
         allow_exact_matches=False,
         suffix="_hist",
     )
+    # Reorient historical stats to the focal team's (T1's) perspective. A
+    # historical row may be stored from either team's viewpoint; when the focal
+    # team is the historical row's T2, goals and points are swapped.
+    joined = joined.with_columns([
+        # Focal is the historical row's T1 -> keep as-is; T2 -> swap goals.
+        pl.when(pl.col("T1") == pl.col("T1_hist"))
+        .then(pl.col("gf_hist")).otherwise(pl.col("ga_hist"))
+        .alias("focal_gf"),
+        pl.when(pl.col("T1") == pl.col("T1_hist"))
+        .then(pl.col("ga_hist")).otherwise(pl.col("gf_hist"))
+        .alias("focal_ga"),
+    ])
+    # Points from goals: W=3, D=1, L=0 (from the focal team's view).
+    joined = joined.with_columns(
+        pl.when(pl.col("focal_gf") > pl.col("focal_ga")).then(pl.lit(3))
+        .when(pl.col("focal_gf") == pl.col("focal_ga")).then(pl.lit(1))
+        .otherwise(pl.lit(0)).cast(pl.Int64).alias("focal_pts")
+    )
     # Aggregate historical encounters per (Div, Season, Date, T1, T2).
     agg = joined.group_by(["Div", "Season", "Date", "T1", "T2"]).agg([
-        pl.col("pts_hist").mean().alias("H2H_PPG"),
-        pl.col("gf_hist").mean().alias("H2H_GF_PG"),
-        pl.col("ga_hist").mean().alias("H2H_GA_PG"),
+        pl.col("focal_pts").mean().alias("H2H_PPG"),
+        pl.col("focal_gf").mean().alias("H2H_GF_PG"),
+        pl.col("focal_ga").mean().alias("H2H_GA_PG"),
         pl.len().alias("H2H_Matches"),
     ])
     # Map back: the focal row's team is T1.
@@ -564,23 +576,69 @@ def _add_streak_features(df: pl.DataFrame) -> pl.DataFrame:
 def _add_table_rank(df: pl.DataFrame) -> pl.DataFrame:
     """League table rank before the match (strictly lagged).
 
-    Rank is computed within (Div, Season, Match_Num) so teams are compared
-    at the same stage of the season. Based on pre-match PPG only — no future
-    information from other teams' later matches enters the rank.
+    Rank is computed from a league-wide table snapshot as of each fixture's
+    own date: every team's pre-match PPG from matches strictly before that
+    date, then ordinal rank by PPG descending. Teams reaching the same match
+    number on different dates are compared at a consistent timestamp, so a
+    prediction never incorporates another team's later pre-match state.
     Teams with 0 prior matches get rank = null.
     """
-    out = df
+    out = df.sort(["Div", "Team", "Season", "Date"])
 
-    if "Team_PPG_Before" not in out.columns or "Match_Num" not in out.columns:
+    if "Team_PPG_Before" not in out.columns:
         return out
 
-    # Rank within (Div, Season, Match_Num) by pre-match PPG.
-    # Teams at the same match number are compared against each other.
-    out = out.with_columns(
-        pl.col("Team_PPG_Before")
+    # Reference state: each team's PPG *after* its latest match, keyed on the
+    # match date. Ranking at date D uses the latest match strictly before D, so
+    # the post-match PPG equals PPG from all matches strictly before D.
+    ref = out.with_columns(
+        (
+            (pl.col("Team_Cum_Points_Before") + pl.col("Points"))
+            / (pl.col("Team_Cum_Matches_Before") + 1)
+        ).cast(pl.Float64).alias("Team_PPG_AsOf")
+    ).select(["Div", "Season", "Team", "Date", "Team_PPG_AsOf"])
+
+    # Distinct calendar dates and teams per (Div, Season).
+    dates = out.select(["Div", "Season", "Date"]).unique()
+    teams = out.select(["Div", "Season", "Team"]).unique()
+
+    # Grid: every team on every date in its league-season. Forward-fill each
+    # team's latest post-match PPG to every date (strictly before the date, so
+    # a match played on date D does not reveal its own result).
+    grid = dates.join(teams, how="cross").select(
+        ["Div", "Season", "Date", "Team"]
+    )
+
+    grid = _asof_join_safe(
+        grid, ref,
+        left_on="Date", right_on="Date",
+        by_left=["Div", "Season", "Team"],
+        by_right=["Div", "Season", "Team"],
+        strategy="backward",
+        allow_exact_matches=False,
+    )
+
+    # Rank teams within each (Div, Season, Date) by PPG as of that date.
+    grid = grid.with_columns(
+        pl.col("Team_PPG_AsOf")
         .rank(method="ordinal", descending=True)
-        .over(["Div", "Season", "Match_Num"])
+        .over(["Div", "Season", "Date"])
         .alias("Team_Table_Rank")
+    )
+    # No prior data yet -> null rank.
+    grid = grid.with_columns(
+        pl.when(pl.col("Team_PPG_AsOf").is_null())
+        .then(None)
+        .otherwise(pl.col("Team_Table_Rank"))
+        .alias("Team_Table_Rank")
+    )
+
+    # Attach each fixture's rank as of its own date.
+    out = out.join(
+        grid.select(["Div", "Season", "Team", "Date", "Team_Table_Rank"]),
+        on=["Div", "Season", "Team", "Date"],
+        how="left",
+        maintain_order="left",
     )
 
     # First match of season: no prior data -> rank null.
@@ -633,8 +691,8 @@ def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
         .alias("pair_b"),
     )
     right = left_a.clone()
-    joined = left_a.join_asof(
-        right,
+    joined = _asof_join_safe(
+        left_a, right,
         left_on="Date", right_on="Date",
         by_left=["Div", "Season", "pair_a", "pair_b"],
         by_right=["Div", "Season", "pair_a", "pair_b"],
