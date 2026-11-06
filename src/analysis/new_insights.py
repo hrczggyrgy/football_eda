@@ -48,19 +48,21 @@ def add_lagged_team_strength(team_matches: pd.DataFrame) -> pd.DataFrame:
     falling back to historical league average if no prior season exists.
     """
     df = team_matches.sort_values(['Div', 'Team', 'Season', 'Date']).copy()
+    grp = ['Div', 'Team', 'Season']
     
-    # Cumulative points and matches before current match
-    df['Points_Cum_Lagged'] = df.groupby(['Div', 'Team', 'Season'])['Points'].apply(
-        lambda x: x.shift(1).expanding(min_periods=1).sum()
-    ).reset_index(level=[0,1,2], drop=True)
-    
-    df['Matches_Cum_Lagged'] = df.groupby(['Div', 'Team', 'Season']).cumcount()
-    
+    # Cumulative points and matches BEFORE the current match (strictly lagged).
+    # cumsum() - current points = points earned in all prior matches;
+    # cumcount() = number of prior matches.
+    # Equivalent to shift(1).expanding().sum() / cumcount() but fully vectorized.
+    points_cum = df.groupby(grp)['Points'].cumsum()
+    matches_cum = df.groupby(grp).cumcount()
+    points_cum_lagged = points_cum - df['Points'].to_numpy()
     df['PreMatch_PPG'] = np.where(
-        df['Matches_Cum_Lagged'] > 0,
-        df['Points_Cum_Lagged'] / df['Matches_Cum_Lagged'],
-        np.nan
+        matches_cum > 0,
+        points_cum_lagged / matches_cum.to_numpy(),
+        np.nan,
     )
+    df['Matches_Cum_Lagged'] = matches_cum.to_numpy()
     
     # Early-season initialization: use PRIOR SEASON PPG (not current season average)
     # Build prior-season lookup
@@ -68,10 +70,10 @@ def add_lagged_team_strength(team_matches: pd.DataFrame) -> pd.DataFrame:
                     '2324': 4, '2425': 5, '2526': 6, '2627': 7}
     
     # Get each team's final PPG from previous season
-    team_season_final = df.groupby(['Div', 'Team', 'Season']).agg(
-        Final_PPG=('Points', 'mean'),
-        Season_Num=('Season', lambda x: season_order.get(x.iloc[0], np.nan))
-    ).reset_index()
+    # Each team's final PPG per season (Season is constant within a group, so
+    # map is equivalent to the previous groupby.apply(lambda x: ...)).
+    team_season_final = df.groupby(grp).agg(Final_PPG=('Points', 'mean')).reset_index()
+    team_season_final['Season_Num'] = team_season_final['Season'].map(season_order)
     team_season_final = team_season_final.sort_values(['Team', 'Season_Num'])
     team_season_final['Prev_Final_PPG'] = team_season_final.groupby('Team')['Final_PPG'].shift(1)
     team_season_final['Prev_Season_Num'] = team_season_final.groupby('Team')['Season_Num'].shift(1)
@@ -119,7 +121,7 @@ def add_lagged_team_strength(team_matches: pd.DataFrame) -> pd.DataFrame:
     # Case 3: First match ever (no prior, no historical) - leave as NaN
     # Don't invent a value; let downstream handle missingness
     
-    return df.drop(columns=['Points_Cum_Lagged', 'Matches_Cum_Lagged', 'Prior_Season_PPG', 
+    return df.drop(columns=['Matches_Cum_Lagged', 'Prior_Season_PPG',
                             'Hist_League_Avg_PPG', 'PreMatch_PPG'])
 
 
@@ -233,36 +235,76 @@ def analyze_opponent_dependent_performance(team_matches: pd.DataFrame, team_seas
     # This avoids the orthogonality problem because Opp_PreMatch_PPG is already partialled out
     # in the fixed effects stage. The residual now captures what the fixed effects miss.
     
-    team_season_interactions = []
-    
-    for (div, team, season), group in tm_valid.groupby(['Div', 'Team', 'Season']):
-        if len(group) < 10:
-            continue
-            
-        opp_strength_vals = group['Opp_PreMatch_PPG'].values
-        residuals = group['Residual'].values
-        
-        if len(np.unique(opp_strength_vals)) > 3:
-            slope, intercept, r_val, p_val, se = stats.linregress(opp_strength_vals, residuals)
-            
-            # Shrink toward zero using team's sample size (empirical Bayes)
-            shrinkage_factor = min(1.0, np.sqrt(len(group)) / 10)
-            shrunk_slope = slope * shrinkage_factor
-            
-            team_season_interactions.append({
-                'Div': div, 'Team': team, 'Season': season,
-                'Matches': len(group),
-                'Opp_Strength_Slope_Raw': slope,
-                'Opp_Strength_Slope_Shrunk': shrunk_slope,
-                'Opp_Strength_SE': se,
-                'Opp_Strength_R': r_val,
-                'Opp_Strength_P': p_val,
-                'Own_PrePPG': group['PreMatch_PPG_Shrunk'].mean(),
-                'Avg_Opp_PrePPG': group['Opp_PreMatch_PPG'].mean(),
-            })
-    
-    results['team_season_interactions'] = pd.DataFrame(team_season_interactions)
-    
+    # Stage 2: Team-specific opponent strength interaction on RESIDUALS
+    # This avoids the orthogonality problem because Opp_PreMatch_PPG is already partialled out
+    # in the fixed effects stage. The residual now captures what the fixed effects miss.
+    #
+    # Vectorized per-group simple linear regression (Residual on Opp_PreMatch_PPG).
+    # Matches scipy.stats.linregress exactly (slope = Sxy/Sxx, r via Sxx*Syy, p via t-dist).
+    def _group_linregress(frame, xcol, ycol, min_n, min_unique):
+        grp = ['Div', 'Team', 'Season']
+        tmp = frame[grp + [xcol, ycol]].copy()
+        tmp['_x2'] = tmp[xcol] ** 2
+        tmp['_y2'] = tmp[ycol] ** 2
+        tmp['_xy'] = tmp[xcol] * tmp[ycol]
+        agg = tmp.groupby(grp).agg(
+            n=(xcol, 'size'),
+            xsum=(xcol, 'sum'),
+            ysum=(ycol, 'sum'),
+            x2sum=('_x2', 'sum'),
+            y2sum=('_y2', 'sum'),
+            xysum=('_xy', 'sum'),
+            nunique=(xcol, 'nunique'),
+        ).reset_index()
+        agg = agg[(agg['n'] >= min_n) & (agg['nunique'] > min_unique)].copy()
+        if len(agg) == 0:
+            return pd.DataFrame()
+        nv = agg['n'].to_numpy(dtype=float)
+        xbar = agg['xsum'].to_numpy(dtype=float) / nv
+        ybar = agg['ysum'].to_numpy(dtype=float) / nv
+        Sxx = agg['x2sum'].to_numpy(dtype=float) - nv * xbar * xbar
+        Sxy = agg['xysum'].to_numpy(dtype=float) - nv * xbar * ybar
+        Syy = agg['y2sum'].to_numpy(dtype=float) - nv * ybar * ybar
+        with np.errstate(divide='ignore', invalid='ignore'):
+            slope = Sxy / Sxx
+            r = Sxy / np.sqrt(Sxx * Syy)
+        r = np.clip(r, -1.0, 1.0)
+        dfree = nv - 2.0
+        with np.errstate(divide='ignore', invalid='ignore'):
+            t = r * np.sqrt(dfree / np.maximum(1.0 - r * r, 1e-12))
+            se = np.sqrt(np.maximum((1.0 - r * r) * Syy, 0.0) / np.maximum(Sxx * dfree, 1e-12))
+        t = np.where(np.isfinite(t), t, 0.0)
+        se = np.where(np.isfinite(se), se, 0.0)
+        p = 2.0 * stats.t.sf(np.abs(t), dfree)
+        p = np.where(np.isfinite(p), p, 1.0)
+        out = agg[['Div', 'Team', 'Season', 'n', 'nunique']].copy()
+        out.columns = ['Div', 'Team', 'Season', 'Matches', 'N_Unique_X']
+        out['Slope'] = slope
+        out['R'] = r
+        out['P'] = p
+        out['SE'] = se
+        out = out.drop(columns=['N_Unique_X'])
+        return out
+
+    # --- Per team-season: Residual on opponent strength -----------------------
+    ts_int = _group_linregress(tm_valid, 'Opp_PreMatch_PPG', 'Residual', min_n=10, min_unique=3)
+    if len(ts_int) > 0:
+        shrinkage = np.minimum(1.0, np.sqrt(ts_int['Matches'].to_numpy(dtype=float)) / 10.0)
+        ts_int['Opp_Strength_Slope_Raw'] = ts_int['Slope']
+        ts_int['Opp_Strength_Slope_Shrunk'] = ts_int['Slope'] * shrinkage
+        ts_int['Opp_Strength_SE'] = ts_int['SE']
+        ts_int['Opp_Strength_R'] = ts_int['R']
+        ts_int['Opp_Strength_P'] = ts_int['P']
+        ts_int['Own_PrePPG'] = tm_valid.groupby(['Div', 'Team', 'Season'])['PreMatch_PPG_Shrunk'].mean().reindex(
+            ts_int.set_index(['Div', 'Team', 'Season']).index).to_numpy()
+        ts_int['Avg_Opp_PrePPG'] = tm_valid.groupby(['Div', 'Team', 'Season'])['Opp_PreMatch_PPG'].mean().reindex(
+            ts_int.set_index(['Div', 'Team', 'Season']).index).to_numpy()
+        ts_int = ts_int[['Div', 'Team', 'Season', 'Matches',
+                         'Opp_Strength_Slope_Raw', 'Opp_Strength_Slope_Shrunk',
+                         'Opp_Strength_SE', 'Opp_Strength_R', 'Opp_Strength_P',
+                         'Own_PrePPG', 'Avg_Opp_PrePPG']]
+    results['team_season_interactions'] = ts_int
+
     # Aggregate to team level (3+ seasons)
     if len(results['team_season_interactions']) > 0:
         team_interactions = results['team_season_interactions'].groupby('Team').agg(
@@ -273,12 +315,17 @@ def analyze_opponent_dependent_performance(team_matches: pd.DataFrame, team_seas
         ).reset_index()
         team_interactions = team_interactions[team_interactions['Seasons'] >= 3]
         results['team_interactions'] = team_interactions.sort_values('Avg_Slope_Shrunk')
-    
+
     # Persistence: early vs late season interaction (NON-OVERLAPPING periods)
     tm_valid['Match_Num_Season'] = tm_valid.groupby(['Div', 'Team', 'Season']).cumcount() + 1
     max_match = tm_valid.groupby(['Div', 'Team', 'Season'])['Match_Num_Season'].transform('max')
     tm_valid['Season_Half'] = np.where(tm_valid['Match_Num_Season'] <= max_match / 2, 'Early', 'Late')
-    
+
+    # Within a single team-season half there is exactly one league-season, so the
+    # league-season dummies drop out (drop_first removes the sole category). The
+    # baseline is therefore a 3-predictor OLS: Points ~ PrePPG + OppPPG + Venue.
+    # Because Opp_PreMatch_PPG is a regressor, the OLS residual is orthogonal to it,
+    # so the second-stage slope is numerically ~0 (same as the original loop).
     persistence_data = []
     for (div, team, season), group in tm_valid.groupby(['Div', 'Team', 'Season']):
         for half in ['Early', 'Late']:
@@ -287,26 +334,26 @@ def analyze_opponent_dependent_performance(team_matches: pd.DataFrame, team_seas
             if valid_half.sum() < 8:
                 continue
             gv = g[valid_half]
-            
-            # Re-fit baseline on THIS half only to avoid leakage across halves
-            ls_dummies_h = pd.get_dummies(gv['LeagueSeason'], drop_first=True)
-            X_base_h = pd.concat([
-                gv[['PreMatch_PPG_Shrunk', 'Opp_PreMatch_PPG', 'Venue_Code']],
-                ls_dummies_h
-            ], axis=1)
-            y_h = gv['Points']
-            reg_h = LinearRegression(fit_intercept=True).fit(X_base_h, y_h)
-            gv['Expected_Points'] = reg_h.predict(X_base_h)
-            gv['Residual'] = gv['Points'] - gv['Expected_Points']
-            
-            slope, _, r_val, p_val, _ = stats.linregress(gv['Opp_PreMatch_PPG'], gv['Residual'])
+            X = np.column_stack([
+                np.ones(len(gv)),
+                gv['PreMatch_PPG_Shrunk'].to_numpy(dtype=float),
+                gv['Opp_PreMatch_PPG'].to_numpy(dtype=float),
+                gv['Venue_Code'].to_numpy(dtype=float),
+            ])
+            y_h = gv['Points'].to_numpy(dtype=float)
+            try:
+                beta, _, _, _ = np.linalg.lstsq(X, y_h, rcond=None)
+                resid = y_h - X @ beta
+            except np.linalg.LinAlgError:
+                continue
+            slope, _, r_val, p_val, _ = stats.linregress(gv['Opp_PreMatch_PPG'].to_numpy(dtype=float), resid)
             persistence_data.append({
                 'Div': div, 'Team': team, 'Season': season, 'Half': half,
-                'Slope': slope, 'R': r_val, 'P': p_val, 'N': len(gv)
+                'Slope': slope, 'R': r_val, 'P': p_val, 'N': len(gv),
             })
-    
+
     results['half_season_interactions'] = pd.DataFrame(persistence_data)
-    
+
     # Cross-half persistence: early slope vs late slope (team-season level)
     if len(results['half_season_interactions']) > 0:
         half_pivot = results['half_season_interactions'].pivot_table(
@@ -318,23 +365,33 @@ def analyze_opponent_dependent_performance(team_matches: pd.DataFrame, team_seas
             if valid.sum() > 10:
                 r, p = stats.pearsonr(half_pivot.loc[valid, 'Early'], half_pivot.loc[valid, 'Late'])
                 results['half_persistence'] = {'r': r, 'p': p, 'n': int(valid.sum())}
-    
+
     # Compare with shot differential and goal differential
-    shot_results = []
-    for (div, team, season), group in tm_valid.groupby(['Div', 'Team', 'Season']):
-        valid = group['Shot_Dominance'].notna() & group['Opp_PreMatch_PPG'].notna()
-        if valid.sum() < 8:
-            continue
-        gv = group[valid]
-        slope_sd, _, r_sd, p_sd, _ = stats.linregress(gv['Opp_PreMatch_PPG'], gv['Shot_Dominance'])
-        slope_gd, _, r_gd, p_gd, _ = stats.linregress(gv['Opp_PreMatch_PPG'], gv['GD'])
-        shot_results.append({
-            'Div': div, 'Team': team, 'Season': season,
-            'ShotDom_Slope': slope_sd, 'ShotDom_R': r_sd, 'ShotDom_P': p_sd,
-            'GD_Slope': slope_gd, 'GD_R': r_gd, 'GD_P': p_gd,
-        })
-    
-    results['shot_gd_interactions'] = pd.DataFrame(shot_results)
+    sd_int = _group_linregress(tm_valid, 'Opp_PreMatch_PPG', 'Shot_Dominance', min_n=8, min_unique=3)
+    gd_int = _group_linregress(tm_valid, 'Opp_PreMatch_PPG', 'GD', min_n=8, min_unique=3)
+    shot_rows = []
+    if len(sd_int) > 0 and len(gd_int) > 0:
+        sd_int = sd_int.set_index(['Div', 'Team', 'Season'])
+        gd_int = gd_int.set_index(['Div', 'Team', 'Season'])
+        common = sd_int.index.intersection(gd_int.index)
+        if len(common) > 0:
+            s = sd_int.loc[common]
+            g = gd_int.loc[common]
+            shot_rows = pd.DataFrame({
+                'Div': common.get_level_values(0),
+                'Team': common.get_level_values(1),
+                'Season': common.get_level_values(2),
+                'ShotDom_Slope': s['Slope'].to_numpy(),
+                'ShotDom_R': s['R'].to_numpy(),
+                'ShotDom_P': s['P'].to_numpy(),
+                'GD_Slope': g['Slope'].to_numpy(),
+                'GD_R': g['R'].to_numpy(),
+                'GD_P': g['P'].to_numpy(),
+            })
+    results['shot_gd_interactions'] = shot_rows if isinstance(shot_rows, pd.DataFrame) else pd.DataFrame(shot_rows)
+
+    return results
+
     
     return results
 
@@ -405,37 +462,40 @@ def analyze_home_advantage_components(master: pd.DataFrame, team_matches: pd.Dat
     
     # Count rows per pair (should be 2 for complete H+A: one home, one away for focal team)
     pair_counts = tm.groupby('Pair_Key').size().reset_index(name='Count')
-    complete_pairs = pair_counts[pair_counts['Count'] == 2]['Pair_Key'].tolist()
-    
+    complete_pairs = set(pair_counts.loc[pair_counts['Count'] == 2, 'Pair_Key'])
     paired_data = tm[tm['Pair_Key'].isin(complete_pairs)].copy()
-    paired_data = paired_data.sort_values(['Pair_Key', 'Venue'])
     
-    # For each paired fixture, compute home-away differences FROM FOCAL TEAM PERSPECTIVE
-    paired_diffs = []
-    for pkey, group in paired_data.groupby('Pair_Key'):
-        if len(group) == 2:
-            home_row = group[group['Venue'] == 'Home']
-            away_row = group[group['Venue'] == 'Away']
-            if len(home_row) == 1 and len(away_row) == 1:
-                home_row = home_row.iloc[0]
-                away_row = away_row.iloc[0]
-                
-                # From focal team perspective (home_row.Team == away_row.Team)
-                paired_diffs.append({
-                    'Div': home_row['Div'], 'Season': home_row['Season'],
-                    'Team': home_row['Team'], 'Opponent': home_row['Opponent'],
-                    'Diff_PPG': home_row['Points'] - away_row['Points'],
-                    'Diff_Shots_PG': home_row['Shots'] - away_row['Shots'],
-                    'Diff_Shots_Ag_PG': home_row['Shots_Against'] - away_row['Shots_Against'],
-                    'Diff_Shot_Acc': (home_row['Shots_OT']/home_row['Shots'] if home_row['Shots']>0 else np.nan) - 
-                                     (away_row['Shots_OT']/away_row['Shots'] if away_row['Shots']>0 else np.nan),
-                    'Diff_GPS': (home_row['GF']/home_row['Shots'] if home_row['Shots']>0 else np.nan) - 
-                               (away_row['GF']/away_row['Shots'] if away_row['Shots']>0 else np.nan),
-                    'Diff_GAOS': (home_row['GA']/home_row['Shots_Against'] if home_row['Shots_Against']>0 else np.nan) - 
-                                (away_row['GA']/away_row['Shots_Against'] if away_row['Shots_Against']>0 else np.nan),
-                })
+    # Split into home and away rows for the focal team and join on Pair_Key.
+    # Each complete pair has exactly one Home and one Away row for the focal team,
+    # so the join is 1:1 and fully vectorized (replaces a slow row-wise Python loop).
+    home = paired_data[paired_data['Venue'] == 'Home'].set_index('Pair_Key')
+    away = paired_data[paired_data['Venue'] == 'Away'].set_index('Pair_Key')
+    m = home.join(away, lsuffix='_H', rsuffix='_A', how='inner').reset_index()
     
-    results['paired_fixture_diffs'] = pd.DataFrame(paired_diffs)
+    if len(m) > 0:
+        def _safe_ratio(num, den):
+            return np.where(den > 0, num / den, np.nan)
+        
+        m['Diff_PPG'] = m['Points_H'] - m['Points_A']
+        m['Diff_Shots_PG'] = m['Shots_H'] - m['Shots_A']
+        m['Diff_Shots_Ag_PG'] = m['Shots_Against_H'] - m['Shots_Against_A']
+        m['Diff_Shot_Acc'] = _safe_ratio(m['Shots_OT_H'], m['Shots_H']) - _safe_ratio(m['Shots_OT_A'], m['Shots_A'])
+        m['Diff_GPS'] = _safe_ratio(m['GF_H'], m['Shots_H']) - _safe_ratio(m['GF_A'], m['Shots_A'])
+        m['Diff_GAOS'] = _safe_ratio(m['GA_H'], m['Shots_Against_H']) - _safe_ratio(m['GA_A'], m['Shots_Against_A'])
+        
+        paired_diffs = m[['Div_H', 'Season_H', 'Team_H', 'Opponent_H',
+                          'Diff_PPG', 'Diff_Shots_PG', 'Diff_Shots_Ag_PG',
+                          'Diff_Shot_Acc', 'Diff_GPS', 'Diff_GAOS']].copy()
+        paired_diffs.columns = ['Div', 'Season', 'Team', 'Opponent',
+                                'Diff_PPG', 'Diff_Shots_PG', 'Diff_Shots_Ag_PG',
+                                'Diff_Shot_Acc', 'Diff_GPS', 'Diff_GAOS']
+    else:
+        paired_diffs = pd.DataFrame(columns=['Div', 'Season', 'Team', 'Opponent',
+                                             'Diff_PPG', 'Diff_Shots_PG', 'Diff_Shots_Ag_PG',
+                                             'Diff_Shot_Acc', 'Diff_GPS', 'Diff_GAOS'])
+    
+    results['paired_fixture_diffs'] = paired_diffs
+
     
     # Overall component contributions to HA
     # HA in PPG = f(HA in shots, HA in accuracy, HA in finishing, HA in defense)
@@ -830,59 +890,58 @@ def analyze_performance_indicators_lead_results(team_matches: pd.DataFrame, team
     # Indicator: matches 1-10 -> Outcome: matches 11-20 (non-overlapping)
     # Indicator: matches 1-15 -> Outcome: matches 16-30
     
-    def compute_window_metrics(group, indicator_end, outcome_start, outcome_end):
-        """Compute indicator and outcome metrics for a team-season."""
-        group = group.sort_values('Date').reset_index(drop=True)
-        n = len(group)
-        
-        if n < outcome_end:
-            return None
-        
-        indicator = group.iloc[:indicator_end]
-        outcome = group.iloc[outcome_start:outcome_end]
-        
-        if len(indicator) < 5 or len(outcome) < 5:
-            return None
-        
-        return pd.Series({
-            'Ind_Shot_Dom': indicator['Shot_Dominance'].mean(),
-            'Ind_SOT_Dom': indicator['SOT_Dominance'].mean(),
-            'Ind_PPG': indicator['Points'].mean(),
-            'Ind_GD_PG': indicator['GD'].mean(),
-            'Ind_GF_PG': indicator['GF'].mean(),
-            'Ind_GA_PG': indicator['GA'].mean(),
-            'Out_PPG': outcome['Points'].mean(),
-            'Out_GD_PG': outcome['GD'].mean(),
-            'Out_GF_PG': outcome['GF'].mean(),
-            'Out_GA_PG': outcome['GA'].mean(),
-            'Out_Shot_Dom': outcome['Shot_Dominance'].mean(),
-            'Out_SOT_Dom': outcome['SOT_Dominance'].mean(),
-            'N_Indicator': len(indicator),
-            'N_Outcome': len(outcome),
-        })
-    
+    # Vectorized window metrics.
+    # For each team-season (sorted by Date), the mean of the first K matches is
+    # cumsum[K-1]/K, and the mean of matches [a, b) is (cumsum[b-1]-cumsum[a-1])/(b-a).
+    # Computed with groupby masks instead of a Python groupby.apply loop.
+    ind_cols = ['Shot_Dominance', 'SOT_Dominance', 'Points', 'GD', 'GF', 'GA']
+    out_cols = ['Points', 'GD', 'GF', 'GA', 'Shot_Dominance', 'SOT_Dominance']
+    ind_rename = {'Shot_Dominance': 'Ind_Shot_Dom', 'SOT_Dominance': 'Ind_SOT_Dom',
+                  'Points': 'Ind_PPG', 'GD': 'Ind_GD_PG', 'GF': 'Ind_GF_PG', 'GA': 'Ind_GA_PG'}
+    out_rename = {'Points': 'Out_PPG', 'GD': 'Out_GD_PG', 'GF': 'Out_GF_PG', 'GA': 'Out_GA_PG',
+                  'Shot_Dominance': 'Out_Shot_Dom', 'SOT_Dominance': 'Out_SOT_Dom'}
+
+    def _window_df(ind_end, out_end, half=False):
+        """Indicator = first ind_end matches; Outcome = matches [ind_end, out_end).
+        If half=True, split at n//2 per team-season."""
+        gk = ['Div', 'Team', 'Season']
+        g = tm.groupby(gk)
+        cc = g.cumcount().to_numpy()
+        n = g.transform('size').to_numpy()
+        if half:
+            valid = n >= 10
+        else:
+            valid = n >= out_end
+        tmv = tm[valid].copy()
+        ccv = cc[valid]
+        nv = n[valid]
+        if half:
+            mid = nv // 2
+            imask = ccv < mid
+            omask = ccv >= mid
+        else:
+            imask = ccv < ind_end
+            omask = (ccv >= ind_end) & (ccv < out_end)
+        ind_sub = tmv[imask]
+        out_sub = tmv[omask]
+        ind_means = ind_sub.groupby(gk)[ind_cols].mean().rename(columns=ind_rename)
+        out_means = out_sub.groupby(gk)[out_cols].mean().rename(columns=out_rename)
+        n_ind = ind_sub.groupby(gk).size().rename('N_Indicator')
+        n_out = out_sub.groupby(gk).size().rename('N_Outcome')
+        df = ind_means.join(out_means, how='outer').join(n_ind).join(n_out)
+        df = df[(df['N_Indicator'] >= 5) & (df['N_Outcome'] >= 5)]
+        return df.reset_index()
+
     # Window 1: First 10 matches -> Next 10 matches (11-20)
-    window1 = tm.groupby(['Div', 'Team', 'Season']).apply(
-        lambda g: compute_window_metrics(g, 10, 10, 20)
-    ).reset_index()
-    window1.columns = ['Div', 'Team', 'Season'] + [c for c in window1.columns if c not in ['Div', 'Team', 'Season']]
-    window1 = window1.dropna()
+    window1 = _window_df(10, 20)
     results['window_10_10'] = window1
-    
+
     # Window 2: First 15 matches -> Next 15 matches (16-30)
-    window2 = tm.groupby(['Div', 'Team', 'Season']).apply(
-        lambda g: compute_window_metrics(g, 15, 15, 30)
-    ).reset_index()
-    window2.columns = ['Div', 'Team', 'Season'] + [c for c in window2.columns if c not in ['Div', 'Team', 'Season']]
-    window2 = window2.dropna()
+    window2 = _window_df(15, 30)
     results['window_15_15'] = window2
-    
+
     # Window 3: First half -> Second half (non-overlapping by match order)
-    window3 = tm.groupby(['Div', 'Team', 'Season']).apply(
-        lambda g: compute_window_metrics(g, len(g)//2, len(g)//2, len(g))
-    ).reset_index()
-    window3.columns = ['Div', 'Team', 'Season'] + [c for c in window3.columns if c not in ['Div', 'Team', 'Season']]
-    window3 = window3.dropna()
+    window3 = _window_df(0, 0, half=True)
     results['window_half_half'] = window3
     
     # Lead-lag correlations for each window
@@ -979,19 +1038,15 @@ def analyze_performance_indicators_lead_results(team_matches: pd.DataFrame, team
     horizon_results = {}
     
     for ind_end, out_end in horizons:
-        out_start = ind_end
-        w = tm.groupby(['Div', 'Team', 'Season']).apply(
-            lambda g: compute_window_metrics(g, ind_end, out_start, out_end)
-        ).reset_index()
+        w = _window_df(ind_end, out_end)
         if len(w) > 0:
-            w.columns = ['Div', 'Team', 'Season'] + [c for c in w.columns if c not in ['Div', 'Team', 'Season']]
             w = w.dropna()
             if len(w) > 20:
                 r, p = stats.pearsonr(w['Ind_Shot_Dom'], w['Out_PPG'])
                 horizon_results[f'ind{ind_end}_out{out_end}'] = {'r': r, 'p': p, 'n': len(w)}
     
     results['horizon_sensitivity'] = horizon_results
-    
+
     return results
 
 

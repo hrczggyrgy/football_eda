@@ -130,37 +130,42 @@ def analyze_efficiency_persistence(team_matches: pd.DataFrame, min_matches: int 
     results['ppg_correlations'] = corr_results
     
     # Half-season persistence
-    def split_half_efficiency(group):
-        group = group.sort_values('Date')
-        n = len(group)
-        mid = n // 2
-        first = group.iloc[:mid]
-        second = group.iloc[mid:]
-        
-        def calc_eff(df):
-            shots = df['Shots'].sum()
-            shots_ot = df['Shots_OT'].sum()
-            gf = df['GF'].sum()
-            ga = df['GA'].sum()
-            shots_a = df['Shots_Against'].sum()
-            shots_ot_a = df['Shots_OT_Against'].sum()
-            return pd.Series({
-                'GPS': gf / shots if shots > 0 else np.nan,
-                'GPSOT': gf / shots_ot if shots_ot > 0 else np.nan,
-                'GAOS': ga / shots_a if shots_a > 0 else np.nan,
-                'GAOSOT': ga / shots_ot_a if shots_ot_a > 0 else np.nan,
-            })
-        
-        first_eff = calc_eff(first)
-        second_eff = calc_eff(second)
-        first_eff.index = [c + '_First' for c in first_eff.index]
-        second_eff.index = [c + '_Second' for c in second_eff.index]
-        return pd.concat([first_eff, second_eff])
-    
-    half_eff = team_matches[
+    # Half-season persistence (vectorized with cumulative sums).
+    # Equivalent to splitting each team-season at mid (by Date) and summing each half,
+    # but computed without a Python groupby.apply loop.
+    tm_sub = team_matches[
         team_matches.groupby(['Div', 'Team', 'Season']).transform('size') >= min_matches
-    ].groupby(['Div', 'Team', 'Season']).apply(split_half_efficiency).reset_index()
+    ].copy()
+    tm_sub = tm_sub.sort_values(['Div', 'Team', 'Season', 'Date'])
+    grp = ['Div', 'Team', 'Season']
+    g = tm_sub.groupby(grp)
+    cc = g.cumcount().to_numpy()
+    n = g.transform('size').to_numpy()
+    mid = n // 2
+    first_mask = cc < mid
+    first = tm_sub[first_mask]
+    second = tm_sub[~first_mask]
+    sum_cols = ['Shots', 'Shots_OT', 'GF', 'GA', 'Shots_Against', 'Shots_OT_Against']
+    first_sums = first.groupby(grp)[sum_cols].sum().add_suffix('_First')
+    second_sums = second.groupby(grp)[sum_cols].sum().add_suffix('_Second')
+    first_matches = first.groupby(grp).size().rename('Matches_First')
+    second_matches = second.groupby(grp).size().rename('Matches_Second')
+    half_eff = first_sums.join(second_sums).join(first_matches).join(second_matches).reset_index()
+    
+    def _ratio0(num, den):
+        return np.where(den > 0, num / den, np.nan)
+    
+    half_eff['GPS_First'] = _ratio0(half_eff['GF_First'], half_eff['Shots_First'])
+    half_eff['GPSOT_First'] = _ratio0(half_eff['GF_First'], half_eff['Shots_OT_First'])
+    half_eff['GAOS_First'] = _ratio0(half_eff['GA_First'], half_eff['Shots_Against_First'])
+    half_eff['GAOSOT_First'] = _ratio0(half_eff['GA_First'], half_eff['Shots_OT_Against_First'])
+    half_eff['GPS_Second'] = _ratio0(half_eff['GF_Second'], half_eff['Shots_Second'])
+    half_eff['GPSOT_Second'] = _ratio0(half_eff['GF_Second'], half_eff['Shots_OT_Second'])
+    half_eff['GAOS_Second'] = _ratio0(half_eff['GA_Second'], half_eff['Shots_Against_Second'])
+    half_eff['GAOSOT_Second'] = _ratio0(half_eff['GA_Second'], half_eff['Shots_OT_Against_Second'])
+    
     results['half_season'] = half_eff
+
     
     half_persistence = {}
     for metric in ['GPS', 'GPSOT', 'GAOS', 'GAOSOT']:
@@ -552,30 +557,40 @@ def run_robustness_checks(team_matches: pd.DataFrame, master: pd.DataFrame) -> D
     top_tier = ['E0', 'SP1', 'D1', 'I1', 'F1']
     lower_tier = ['E1', 'E2', 'E3']
     
-    def half_persistence(df):
-        df = df.sort_values('Date')
-        n = len(df)
+    # Vectorized half-season persistence per tier (cumulative sums, no groupby.apply).
+    def _tier_half_eff(tier_data):
+        sum_cols = ['GF', 'GA', 'Shots', 'Shots_OT', 'Shots_Against', 'Shots_OT_Against']
+        tm_sub = tier_data.sort_values(['Div', 'Team', 'Season', 'Date']).copy()
+        grp = ['Div', 'Team', 'Season']
+        g = tm_sub.groupby(grp)
+        cc = g.cumcount().to_numpy()
+        n = g.transform('size').to_numpy()
         mid = n // 2
-        first = df.iloc[:mid]
-        second = df.iloc[mid:]
-        def eff(g):
-            return pd.Series({
-                'GPS': g['GF'].sum() / g['Shots'].sum() if g['Shots'].sum() > 0 else np.nan,
-                'GPSOT': g['GF'].sum() / g['Shots_OT'].sum() if g['Shots_OT'].sum() > 0 else np.nan,
-                'GAOS': g['GA'].sum() / g['Shots_Against'].sum() if g['Shots_Against'].sum() > 0 else np.nan,
-            })
-        f = eff(first)
-        s = eff(second)
-        f.index = [c + '_F' for c in f.index]
-        s.index = [c + '_S' for c in s.index]
-        return pd.concat([f, s])
+        first_mask = cc < mid
+        first = tm_sub[first_mask]
+        second = tm_sub[~first_mask]
+        first_sums = first.groupby(grp)[sum_cols].sum().add_suffix('_F')
+        second_sums = second.groupby(grp)[sum_cols].sum().add_suffix('_S')
+        half_eff = first_sums.join(second_sums).reset_index()
+        
+        def _ratio0(num, den):
+            return np.where(den > 0, num / den, np.nan)
+        
+        half_eff['GPS_F'] = _ratio0(half_eff['GF_F'], half_eff['Shots_F'])
+        half_eff['GPSOT_F'] = _ratio0(half_eff['GF_F'], half_eff['Shots_OT_F'])
+        half_eff['GAOS_F'] = _ratio0(half_eff['GA_F'], half_eff['Shots_Against_F'])
+        half_eff['GPS_S'] = _ratio0(half_eff['GF_S'], half_eff['Shots_S'])
+        half_eff['GPSOT_S'] = _ratio0(half_eff['GF_S'], half_eff['Shots_OT_S'])
+        half_eff['GAOS_S'] = _ratio0(half_eff['GA_S'], half_eff['Shots_Against_S'])
+        return half_eff
     
     tier_persistence = {}
     for tier_name, tiers in [('Top_5', top_tier), ('Lower_Eng', lower_tier)]:
         tier_data = team_matches[team_matches['Div'].isin(tiers)]
         if len(tier_data) == 0:
             continue
-        half_eff = tier_data.groupby(['Div', 'Team', 'Season']).apply(half_persistence).reset_index()
+        half_eff = _tier_half_eff(tier_data)
+
         for metric in ['GPS', 'GPSOT', 'GAOS']:
             f_col = f'{metric}_F'
             s_col = f'{metric}_S'

@@ -56,6 +56,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+markers = [
+    "perf: performance regression tests (timing-based, run with -m perf)",
+]
 
 [tool.black]
 line-length = 100

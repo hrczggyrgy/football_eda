@@ -71,20 +71,22 @@ def add_rolling_features(df: pd.DataFrame, window: int = 5, min_periods: int = 3
     # Group key for vectorized rolling
     df['_group_key'] = df.groupby(['Div', 'Team', 'Season']).ngroup()
     
-    for col in ROLLING_COLS:
-        if col not in df.columns:
-            continue
+    # Shift every rolling column by 1 in a single groupby pass to avoid
+    # lookahead leakage. Doing this once (rather than once per column)
+    # avoids repeating the groupby setup for each of ~19 columns.
+    shift_cols = [c for c in ROLLING_COLS if c in df.columns]
+    shifted = df.groupby(['Div', 'Team', 'Season'])[shift_cols].shift(1)
+    
+    for col in shift_cols:
+        s = shifted[col]
         
-        # Shift by 1 to avoid leakage - THIS IS THE KEY FIX
-        shifted = df.groupby(['Div', 'Team', 'Season'])[col].shift(1)
-        
-        # Rolling mean/std on SHIFTED data
-        rolled = shifted.groupby(df['_group_key']).rolling(window=window, min_periods=min_periods)
+        # Rolling mean/std on SHIFTED data (no leakage)
+        rolled = s.groupby(df['_group_key']).rolling(window=window, min_periods=min_periods)
         df[f'{col}_L{window}'] = rolled.mean().reset_index(level=0, drop=True)
         df[f'{col}_L{window}_std'] = rolled.std().reset_index(level=0, drop=True)
         
         # Cumulative expanding mean (lagged)
-        cum = shifted.groupby(df['_group_key']).expanding(min_periods=1).mean()
+        cum = s.groupby(df['_group_key']).expanding(min_periods=1).mean()
         df[f'{col}_Cum'] = cum.reset_index(level=0, drop=True)
     
     df = df.drop(columns=['_group_key'])
@@ -92,28 +94,37 @@ def add_rolling_features(df: pd.DataFrame, window: int = 5, min_periods: int = 3
 
 
 def add_opponent_strength(df: pd.DataFrame) -> pd.DataFrame:
-    """Add opponent's season-to-date PPG before this match (lagged)."""
+    """Add opponent's season-to-date PPG before this match (lagged).
+    
+    The opponent's pre-match cumulative PPG is looked up via a vectorized
+    merge on (Div, Season, Date, Opponent) instead of a slow row-wise
+    DataFrame.apply(axis=1) dictionary lookup. Results are identical.
+    """
     df = df.sort_values(['Div', 'Team', 'Season', 'Date']).copy()
     
-    # Compute each team's cumulative PPG before each match
-    df['_group_key'] = df.groupby(['Div', 'Team', 'Season']).ngroup()
-    
-    # Points cumulative mean (lagged)
-    points_cum = df.groupby(['Div', 'Team', 'Season'])['Points'].apply(
-        lambda x: x.shift(1).expanding(min_periods=1).mean()
-    ).reset_index(level=[0,1,2], drop=True)
-    df['Points_Cum'] = points_cum
-    
-    # For each match, get opponent's Points_Cum
-    # Create lookup: (Div, Season, Date, Opponent) -> Points_Cum
-    opp_lookup = df.set_index(['Div', 'Season', 'Date', 'Team'])['Points_Cum']
-    
-    df['Opp_PPG_Cum'] = df.apply(
-        lambda row: opp_lookup.get((row['Div'], row['Season'], row['Date'], row['Opponent']), np.nan),
-        axis=1
+    # Pre-match (lagged) cumulative PPG for each team in each match.
+    # cumsum - current points = points earned before this match;
+    # cumcount = number of prior matches.
+    grp = ['Div', 'Team', 'Season']
+    points_cum = df.groupby(grp)['Points'].cumsum()
+    matches_cum = df.groupby(grp).cumcount()
+    pre_match_ppg = np.where(
+        matches_cum > 0,
+        (points_cum - df['Points'].values) / matches_cum,
+        np.nan,
     )
     
-    df = df.drop(columns=['_group_key', 'Points_Cum'])
+    # Build a lookup keyed by (Div, Season, Date, Team) and merge so each
+    # match row picks up its opponent's pre-match PPG.
+    lookup = pd.DataFrame({
+        'Div': df['Div'].values,
+        'Season': df['Season'].values,
+        'Date': df['Date'].values,
+        'Opponent': df['Team'].values,
+        'Opp_PPG_Cum': pre_match_ppg,
+    })
+    df = df.merge(lookup, on=['Div', 'Season', 'Date', 'Opponent'], how='left')
+    
     return df
 
 
@@ -128,10 +139,10 @@ def compute_team_season_metrics(team_matches: pd.DataFrame, min_matches: int = 2
                    'Shots_Against', 'Shots_OT_Against',
                    'Yellow', 'Red', 'Fouls', 'Corners', 'Corners_Against']
     
-    # For each metric, count valid (non-NaN) matches
-    valid_counts = team_matches.groupby(['Div', 'Team', 'Season'])[metric_cols].apply(
-        lambda x: x.notna().sum()
-    ).reset_index()
+    # For each metric, count valid (non-NaN) matches. DataFrameGroupBy.count()
+    # already excludes NA values, so this is equivalent to notna().sum() but
+    # fully vectorized (avoids a Python row-wise apply per group).
+    valid_counts = team_matches.groupby(['Div', 'Team', 'Season'])[metric_cols].count().reset_index()
     valid_counts.columns = ['Div', 'Team', 'Season'] + [f'{c}_Valid' for c in metric_cols]
     
     # Sums with skipna=False to preserve NaN for all-missing groups

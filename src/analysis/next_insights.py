@@ -106,24 +106,33 @@ def analyze_competitive_balance(team_season: pd.DataFrame) -> Dict:
             }
     results['overall_trend'] = overall_trend
     
-    # Bootstrap confidence intervals for trend slopes
+    # Bootstrap confidence intervals for trend slopes.
+    # Vectorized: resample the metric values (x = arange(n) is fixed) using a
+    # (n_boot, n) index matrix; slope = sum((x-xbar)*y_boot)/sum((x-xbar)^2),
+    # which is exactly the linregress slope on each resample. Same nonparametric
+    # bootstrap design (n_boot=1000, percentile CI); only the RNG draw ordering
+    # differs from the per-bootstrap pandas.sample loop.
     bootstrap_trends = {}
     n_boot = 1000
     for metric in ['HHI_Norm', 'Gini', 'Gap', 'Top4_Share']:
         v = balance_df[metric].notna()
         if v.sum() >= 3:
             df_valid = balance_df.loc[v].copy()
-            slopes = []
-            for _ in range(n_boot):
-                sample = df_valid.sample(n=len(df_valid), replace=True)
-                slope, _, _, _, _ = stats.linregress(np.arange(len(sample)), sample[metric])
-                slopes.append(slope)
+            y = df_valid[metric].to_numpy(dtype=float)
+            n = len(y)
+            x = np.arange(n, dtype=float)
+            xc = x - x.mean()
+            denom = float((xc * xc).sum())
+            idx = np.random.randint(0, n, size=(n_boot, n))
+            y_boot = y[idx]
+            slopes = (xc[None, :] * y_boot).sum(axis=1) / denom
             bootstrap_trends[metric] = {
-                'slope_mean': np.mean(slopes),
-                'slope_std': np.std(slopes),
-                'ci_95': (np.percentile(slopes, 2.5), np.percentile(slopes, 97.5)),
+                'slope_mean': float(np.mean(slopes)),
+                'slope_std': float(np.std(slopes)),
+                'ci_95': (float(np.percentile(slopes, 2.5)), float(np.percentile(slopes, 97.5))),
             }
     results['bootstrap_trends'] = bootstrap_trends
+
     
     return results
 
@@ -289,32 +298,38 @@ def analyze_corner_efficiency(team_season: pd.DataFrame, team_matches: pd.DataFr
         }
     
     # Half-season persistence
-    def split_half_corners(group):
-        group = group.sort_values('Date')
-        n = len(group)
-        mid = n // 2
-        first = group.iloc[:mid]
-        second = group.iloc[mid:]
-        
-        def calc(df):
-            corners = df['Corners'].sum()
-            shots = df['Shots'].sum()
-            gf = df['GF'].sum()
-            return pd.Series({
-                'Corners_PG': corners / len(df) if len(df) > 0 else np.nan,
-                'Shots_Per_Corner': shots / corners if corners > 0 else np.nan,
-                'Goals_Per_Corner': gf / corners if corners > 0 else np.nan,
-            })
-        
-        first_eff = calc(first)
-        second_eff = calc(second)
-        first_eff.index = [c + '_First' for c in first_eff.index]
-        second_eff.index = [c + '_Second' for c in second_eff.index]
-        return pd.concat([first_eff, second_eff])
+    # Vectorized half-season corner efficiency (cumulative sums, no groupby.apply).
+    gk = ['Div', 'Team', 'Season']
+    tm_c = team_matches[team_matches.groupby(gk).transform('size') >= 20].copy()
+    tm_c = tm_c.sort_values(['Div', 'Team', 'Season', 'Date'])
+    g = tm_c.groupby(gk)
+    cc = g.cumcount().to_numpy()
+    n = g.transform('size').to_numpy()
+    mid = n // 2
+    first_mask = cc < mid
+    first = tm_c[first_mask]
+    second = tm_c[~first_mask]
     
-    half_corners = team_matches[
-        team_matches.groupby(['Div', 'Team', 'Season']).transform('size') >= 20
-    ].groupby(['Div', 'Team', 'Season']).apply(split_half_corners).reset_index()
+    first_corners = first.groupby(gk)['Corners'].sum().rename('Corners_First')
+    second_corners = second.groupby(gk)['Corners'].sum().rename('Corners_Second')
+    first_shots = first.groupby(gk)['Shots'].sum().rename('Shots_First')
+    second_shots = second.groupby(gk)['Shots'].sum().rename('Shots_Second')
+    first_gf = first.groupby(gk)['GF'].sum().rename('GF_First')
+    second_gf = second.groupby(gk)['GF'].sum().rename('GF_Second')
+    first_n = first.groupby(gk).size().rename('N_First')
+    second_n = second.groupby(gk).size().rename('N_Second')
+    
+    half_corners = pd.concat([first_corners, second_corners, first_shots, second_shots,
+                              first_gf, second_gf, first_n, second_n], axis=1).reset_index()
+    def _ratio0(num, den):
+        return np.where(den > 0, num / den, np.nan)
+    half_corners['Corners_PG_First'] = _ratio0(half_corners['Corners_First'], half_corners['N_First'])
+    half_corners['Corners_PG_Second'] = _ratio0(half_corners['Corners_Second'], half_corners['N_Second'])
+    half_corners['Shots_Per_Corner_First'] = _ratio0(half_corners['Shots_First'], half_corners['Corners_First'])
+    half_corners['Shots_Per_Corner_Second'] = _ratio0(half_corners['Shots_Second'], half_corners['Corners_Second'])
+    half_corners['Goals_Per_Corner_First'] = _ratio0(half_corners['GF_First'], half_corners['Corners_First'])
+    half_corners['Goals_Per_Corner_Second'] = _ratio0(half_corners['GF_Second'], half_corners['Corners_Second'])
+
     
     half_persistence = {}
     for metric in ['Corners_PG', 'Goals_Per_Corner', 'Shots_Per_Corner']:
@@ -471,33 +486,41 @@ def analyze_shooting_profiles(team_season: pd.DataFrame, team_matches: pd.DataFr
     }
     
     # Half-season persistence of profile metrics
-    def split_half_shooting(group):
-        group = group.sort_values('Date')
-        n = len(group)
-        mid = n // 2
-        first = group.iloc[:mid]
-        second = group.iloc[mid:]
-        
-        def calc(df):
-            shots = df['Shots'].sum()
-            shots_ot = df['Shots_OT'].sum()
-            gf = df['GF'].sum()
-            return pd.Series({
-                'Shots_PG': shots / len(df) if len(df) > 0 else np.nan,
-                'Shot_Accuracy': shots_ot / shots if shots > 0 else np.nan,
-                'Goals_Per_Shot': gf / shots if shots > 0 else np.nan,
-                'Goals_Per_Shot_OT': gf / shots_ot if shots_ot > 0 else np.nan,
-            })
-        
-        first_eff = calc(first)
-        second_eff = calc(second)
-        first_eff.index = [c + '_First' for c in first_eff.index]
-        second_eff.index = [c + '_Second' for c in second_eff.index]
-        return pd.concat([first_eff, second_eff])
+    # Vectorized half-season shooting efficiency (cumulative sums, no groupby.apply).
+    gk = ['Div', 'Team', 'Season']
+    tm_s = team_matches[team_matches.groupby(gk).transform('size') >= 20].copy()
+    tm_s = tm_s.sort_values(['Div', 'Team', 'Season', 'Date'])
+    g = tm_s.groupby(gk)
+    cc = g.cumcount().to_numpy()
+    n = g.transform('size').to_numpy()
+    mid = n // 2
+    first_mask = cc < mid
+    first = tm_s[first_mask]
+    second = tm_s[~first_mask]
     
-    half_shooting = team_matches[
-        team_matches.groupby(['Div', 'Team', 'Season']).transform('size') >= 20
-    ].groupby(['Div', 'Team', 'Season']).apply(split_half_shooting).reset_index()
+    first_shots = first.groupby(gk)['Shots'].sum().rename('Shots_First')
+    second_shots = second.groupby(gk)['Shots'].sum().rename('Shots_Second')
+    first_shots_ot = first.groupby(gk)['Shots_OT'].sum().rename('Shots_OT_First')
+    second_shots_ot = second.groupby(gk)['Shots_OT'].sum().rename('Shots_OT_Second')
+    first_gf = first.groupby(gk)['GF'].sum().rename('GF_First')
+    second_gf = second.groupby(gk)['GF'].sum().rename('GF_Second')
+    first_n = first.groupby(gk).size().rename('N_First')
+    second_n = second.groupby(gk).size().rename('N_Second')
+    
+    half_shooting = pd.concat([first_shots, second_shots, first_shots_ot, second_shots_ot,
+                               first_gf, second_gf, first_n, second_n], axis=1).reset_index()
+    def _ratio0(num, den):
+        return np.where(den > 0, num / den, np.nan)
+    half_shooting['Shots_PG_First'] = _ratio0(half_shooting['Shots_First'], half_shooting['N_First'])
+    half_shooting['Shots_PG_Second'] = _ratio0(half_shooting['Shots_Second'], half_shooting['N_Second'])
+    half_shooting['Shot_Accuracy_First'] = _ratio0(half_shooting['Shots_OT_First'], half_shooting['Shots_First'])
+    half_shooting['Shot_Accuracy_Second'] = _ratio0(half_shooting['Shots_OT_Second'], half_shooting['Shots_Second'])
+    half_shooting['Goals_Per_Shot_First'] = _ratio0(half_shooting['GF_First'], half_shooting['Shots_First'])
+    half_shooting['Goals_Per_Shot_Second'] = _ratio0(half_shooting['GF_Second'], half_shooting['Shots_Second'])
+    half_shooting['Goals_Per_Shot_OT_First'] = _ratio0(half_shooting['GF_First'], half_shooting['Shots_OT_First'])
+    half_shooting['Goals_Per_Shot_OT_Second'] = _ratio0(half_shooting['GF_Second'], half_shooting['Shots_OT_Second'])
+
+
     
     half_persistence = {}
     for metric in ['Shots_PG', 'Shot_Accuracy', 'Goals_Per_Shot', 'Goals_Per_Shot_OT']:

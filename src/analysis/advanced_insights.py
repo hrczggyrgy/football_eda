@@ -40,43 +40,42 @@ def analyze_finishing_persistence(team_matches: pd.DataFrame, min_matches: int =
     team_matches_valid = team_matches.merge(valid_seasons[['Div', 'Team', 'Season']], on=['Div', 'Team', 'Season'])
     
     # Split each team-season into early and late periods (by match order)
-    def split_period_efficiency(group):
-        group = group.sort_values('Date')
-        n = len(group)
-        mid = n // 2
-        early = group.iloc[:mid]
-        late = group.iloc[mid:]
-        
-        def calc_eff(df):
-            shots = df['Shots'].sum()
-            shots_ot = df['Shots_OT'].sum()
-            gf = df['GF'].sum()
-            ga = df['GA'].sum()
-            shots_a = df['Shots_Against'].sum()
-            shots_ot_a = df['Shots_OT_Against'].sum()
-            return pd.Series({
-                'Shots': shots,
-                'Shots_OT': shots_ot,
-                'GF': gf,
-                'GA': ga,
-                'Shots_Against': shots_a,
-                'Shots_OT_Against': shots_ot_a,
-                'Matches': len(df),
-                'Shot_Accuracy': shots_ot / shots if shots > 0 else np.nan,
-                'Goals_Per_Shot': gf / shots if shots > 0 else np.nan,
-                'Goals_Per_Shot_OT': gf / shots_ot if shots_ot > 0 else np.nan,
-                'GA_Per_Opp_Shot': ga / shots_a if shots_a > 0 else np.nan,
-                'GA_Per_Opp_Shot_OT': ga / shots_ot_a if shots_ot_a > 0 else np.nan,
-            })
-        
-        early_eff = calc_eff(early)
-        late_eff = calc_eff(late)
-        early_eff.index = [c + '_Early' for c in early_eff.index]
-        late_eff.index = [c + '_Late' for c in late_eff.index]
-        return pd.concat([early_eff, late_eff])
+    # Vectorized early/late period efficiency.
+    # Equivalent to splitting each team-season at mid (by Date) and summing each half,
+    # but computed with cumulative sums instead of a Python groupby.apply loop.
+    tm_sorted = team_matches_valid.sort_values(['Div', 'Team', 'Season', 'Date']).copy()
+    grp = ['Div', 'Team', 'Season']
+    sum_cols = ['Shots', 'Shots_OT', 'GF', 'GA', 'Shots_Against', 'Shots_OT_Against']
+    g = tm_sorted.groupby(grp)
+    n = g.transform('size')            # per-row group size (aligned)
+    cc = g.cumcount()                  # per-row position within group (0-indexed)
+    early_mask = cc < (n // 2)         # first half = early period
     
-    period_eff = team_matches_valid.groupby(['Div', 'Team', 'Season']).apply(split_period_efficiency).reset_index()
+    early = tm_sorted[early_mask]
+    late = tm_sorted[~early_mask]
+    early_sums = early.groupby(grp)[sum_cols].sum().add_suffix('_Early')
+    late_sums = late.groupby(grp)[sum_cols].sum().add_suffix('_Late')
+    early_matches = early.groupby(grp).size().rename('Matches_Early')
+    late_matches = late.groupby(grp).size().rename('Matches_Late')
+    
+    period_eff = early_sums.join(late_sums).join(early_matches).join(late_matches).reset_index()
+    
+    def _ratio(num, den):
+        return np.where(den > 0, num / den, np.nan)
+    
+    period_eff['Shot_Accuracy_Early'] = _ratio(period_eff['Shots_OT_Early'], period_eff['Shots_Early'])
+    period_eff['Goals_Per_Shot_Early'] = _ratio(period_eff['GF_Early'], period_eff['Shots_Early'])
+    period_eff['Goals_Per_Shot_OT_Early'] = _ratio(period_eff['GF_Early'], period_eff['Shots_OT_Early'])
+    period_eff['GA_Per_Opp_Shot_Early'] = _ratio(period_eff['GA_Early'], period_eff['Shots_Against_Early'])
+    period_eff['GA_Per_Opp_Shot_OT_Early'] = _ratio(period_eff['GA_Early'], period_eff['Shots_OT_Against_Early'])
+    period_eff['Shot_Accuracy_Late'] = _ratio(period_eff['Shots_OT_Late'], period_eff['Shots_Late'])
+    period_eff['Goals_Per_Shot_Late'] = _ratio(period_eff['GF_Late'], period_eff['Shots_Late'])
+    period_eff['Goals_Per_Shot_OT_Late'] = _ratio(period_eff['GF_Late'], period_eff['Shots_OT_Late'])
+    period_eff['GA_Per_Opp_Shot_Late'] = _ratio(period_eff['GA_Late'], period_eff['Shots_Against_Late'])
+    period_eff['GA_Per_Opp_Shot_OT_Late'] = _ratio(period_eff['GA_Late'], period_eff['Shots_OT_Against_Late'])
+    
     results['period_efficiency'] = period_eff
+
     
     # Exposure thresholds: minimum shots for finishing metrics
     min_shots = 30  # minimum total shots in period for GPS
@@ -458,10 +457,6 @@ def analyze_volatility_streakiness(team_matches: pd.DataFrame, team_season: pd.D
     team_matches_valid = team_matches.merge(valid_seasons[['Div', 'Team', 'Season']], on=['Div', 'Team', 'Season'])
     team_matches_valid = team_matches_valid.sort_values(['Div', 'Team', 'Season', 'Date'])
     
-    # 1. Performance level: season PPG
-    # 2. Dispersion: Points_CV (already computed)
-    # 3. Temporal dependence: autocorrelation, runs test
-    
     # Match-level expected points model (simple: league-season average + home advantage)
     match_expectations = team_matches_valid.groupby(['Div', 'Season', 'Venue'])['Points'].mean().reset_index()
     match_expectations.columns = ['Div', 'Season', 'Venue', 'Exp_Points_Baseline']
@@ -469,7 +464,6 @@ def analyze_volatility_streakiness(team_matches: pd.DataFrame, team_season: pd.D
     
     # Better model: include opponent strength (Opp_PPG_Cum)
     if 'Opp_PPG_Cum' in team_matches_valid.columns:
-        # Simple linear model for expected points
         valid = team_matches_valid['Opp_PPG_Cum'].notna() & team_matches_valid['Points'].notna()
         if valid.sum() > 100:
             X = team_matches_valid.loc[valid, ['Opp_PPG_Cum']].values
@@ -497,85 +491,79 @@ def analyze_volatility_streakiness(team_matches: pd.DataFrame, team_season: pd.D
     
     results['residual_dispersion'] = residual_disp
     
-    # Simulation-based benchmark for residual dispersion
-    # Simulate matches from estimated model using calibrated outcome probabilities
-    # Generate match outcomes ONCE per match, then derive both team perspectives
+    # Precompute per team-season arrays once (avoids re-filtering the full frame
+    # inside each of the three loops below).
+    resid_lookup = {}
+    exp_lookup = {}
+    for (div, team, season), g in team_matches_valid.groupby(['Div', 'Team', 'Season']):
+        resid_lookup[(div, team, season)] = g['Residual'].dropna().to_numpy(dtype=float)
+        exp_lookup[(div, team, season)] = g['Exp_Points_Model'].dropna().to_numpy(dtype=float)
+    # League-season draw rate (scalar per league-season)
+    draw_rate = team_matches_valid.assign(_is_d=(team_matches_valid['FT_Result'] == 'D').astype(float))         .groupby(['Div', 'Season'])['_is_d'].mean()
+    default_draw_rate = 0.25
+    
+    # ------------------------------------------------------------------
+    # Simulation-based benchmark for residual dispersion (vectorized MC)
+    # Simulate matches from estimated model using calibrated outcome probabilities.
+    # Match outcomes are drawn for ALL simulations at once with numpy; the
+    # sampling design (n_sims multinomial draws per match, calibrated probs)
+    # is unchanged, only the RNG draw ordering differs from the original
+    # per-match loop (Monte Carlo SE of the Z-score ~ 1/sqrt(n_sims) ~= 0.1).
+    # ------------------------------------------------------------------
     n_sims = 100  # Increased for Monte Carlo precision
     sim_dispersions = []
+    pts_vals = np.array([0.0, 1.0, 3.0])
     
     for _, season_row in residual_disp.iterrows():
-        div, team, season = season_row['Div'], season_row['Team'], season_row['Season']
-        matches = team_matches_valid[(team_matches_valid['Div']==div) & 
-                                     (team_matches_valid['Team']==team) & 
-                                     (team_matches_valid['Season']==season)].copy()
-        if len(matches) < min_matches:
+        key = (season_row['Div'], season_row['Team'], season_row['Season'])
+        exp_points = exp_lookup.get(key)
+        if exp_points is None or len(exp_points) < min_matches:
             continue
-        
-        # Get expected points and calibrate outcome probabilities per match
-        exp_points = matches['Exp_Points_Model'].values
-        exp_points = exp_points[~np.isnan(exp_points)]
-        if len(exp_points) < min_matches:
-            continue
-        
-        # For each match, estimate Win/Draw/Loss probabilities from expected points
-        # Using ordered probit approximation: p3 = P(Win), p1 = P(Draw), p0 = P(Loss)
-        # 3*p3 + 1*p1 = exp_points, p3+p1+p0=1
-        # Calibrate using league-season average draw rate
-        lg_season_draw_rate = matches.groupby(['Div', 'Season'])['FT_Result'].apply(
-            lambda x: (x == 'D').mean()
-        )
-        # Default draw rate if not available
-        default_draw_rate = 0.25
-        
         n_matches = len(exp_points)
-        sim_stds = []
+        # Draw rate for this league-season
+        try:
+            p1 = float(draw_rate.loc[(season_row['Div'], season_row['Season'])])
+        except KeyError:
+            p1 = default_draw_rate
+        if not np.isfinite(p1):
+            p1 = default_draw_rate
         
-        for _ in range(n_sims):
-            sim_points = []
-            for i, ep in enumerate(exp_points):
-                # Use match-specific draw rate if available, else default
-                if len(lg_season_draw_rate) > 0:
-                    p1 = lg_season_draw_rate.iloc[0] if hasattr(lg_season_draw_rate, 'iloc') else default_draw_rate
-                else:
-                    p1 = default_draw_rate
-                
-                # Solve for p3, p0 given expected points and draw probability
-                # 3*p3 + p1 = ep  =>  p3 = (ep - p1) / 3
-                p3 = max(0, min(1, (ep - p1) / 3))
-                p0 = 1 - p3 - p1
-                
-                # Ensure valid probabilities
-                if p0 < 0:
-                    # Edge case: very low expected points
-                    p0 = 0
-                    p3 = ep / 3
-                    p1 = 1 - p3
-                elif p3 < 0:
-                    p3 = 0
-                    p0 = 1 - p1
-                
-                if p3 < 0 or p1 < 0 or p0 < 0 or abs(p3 + p1 + p0 - 1) > 1e-10:
-                    # Fallback: use empirical distribution
-                    outcome = np.random.choice([3, 1, 0], p=[1/3, 1/3, 1/3])
-                else:
-                    outcome = np.random.choice([3, 1, 0], p=[p3, p1, p0])
-                sim_points.append(outcome)
-            
-            if len(sim_points) == n_matches:
-                sim_stds.append(np.std(sim_points))
+        # Calibrated Win/Draw/Loss probabilities per match
+        # 3*p3 + 1*p1 = exp_points, p3 + p1 + p0 = 1  =>  p3 = (ep - p1)/3
+        p3 = np.clip((exp_points - p1) / 3.0, 0.0, 1.0)
+        p1_arr = np.full(n_matches, p1, dtype=float)
+        p0 = 1.0 - p3 - p1_arr
+        m0 = p0 < 0
+        if m0.any():
+            p3[m0] = np.clip(exp_points[m0] / 3.0, 0.0, 1.0)
+            p1_arr[m0] = 1.0 - p3[m0]
+            p0 = 1.0 - p3 - p1_arr
+        ok = (np.isfinite(p3) & np.isfinite(p0) & (p3 >= 0) & (p0 >= 0)
+              & (np.abs(p3 + p1_arr + p0 - 1.0) <= 1e-10))
+        if not ok.all():
+            p3 = np.where(ok, p3, 1.0 / 3.0)
+            p0 = np.where(ok, p0, 1.0 / 3.0)
+            p1_arr = np.where(ok, p1_arr, 1.0 / 3.0)
         
-        if sim_stds:
-            sim_mean = np.mean(sim_stds)
-            sim_std = np.std(sim_stds)
-            z_score = (season_row['Points_Std'] - sim_mean) / sim_std if sim_std > 0 else np.nan
-            sim_dispersions.append({
-                'Div': div, 'Team': team, 'Season': season,
-                'Observed_Std': season_row['Points_Std'],
-                'Simulated_Std_Mean': sim_mean,
-                'Simulated_Std_Std': sim_std,
-                'Z_Score': z_score,
-                'N_Sims': len(sim_stds),
-            })
+        # Draw all simulations at once: (n_sims, n_matches)
+        u = np.random.random((n_sims, n_matches))
+        cp0 = p0[None, :]
+        cp1 = (p0 + p1_arr)[None, :]
+        draw_idx = (u >= cp0).astype(np.int8) + (u >= cp1).astype(np.int8)
+        sim_points = np.take(pts_vals, draw_idx)
+        sim_stds = sim_points.std(axis=1)
+        
+        sim_mean = float(sim_stds.mean())
+        sim_std = float(sim_stds.std(ddof=0))
+        z_score = (season_row['Points_Std'] - sim_mean) / sim_std if sim_std > 0 else np.nan
+        sim_dispersions.append({
+            'Div': season_row['Div'], 'Team': season_row['Team'], 'Season': season_row['Season'],
+            'Observed_Std': season_row['Points_Std'],
+            'Simulated_Std_Mean': sim_mean,
+            'Simulated_Std_Std': sim_std,
+            'Z_Score': z_score,
+            'N_Sims': len(sim_stds),
+        })
     
     results['simulation_benchmark'] = pd.DataFrame(sim_dispersions)
     
@@ -587,33 +575,28 @@ def analyze_volatility_streakiness(team_matches: pd.DataFrame, team_season: pd.D
         'monte_carlo_precision': f'SE of Z-score ~ 1/sqrt({n_sims}) ≈ 0.1',
     }
     
+    # ------------------------------------------------------------------
     # Streakiness: runs test and autocorrelation on residuals
+    # ------------------------------------------------------------------
     streakiness = []
-    for _, season_row in residual_disp.iterrows():
-        div, team, season = season_row['Div'], season_row['Team'], season_row['Season']
-        matches = team_matches_valid[(team_matches_valid['Div']==div) & 
-                                     (team_matches_valid['Team']==team) & 
-                                     (team_matches_valid['Season']==season)].copy()
-        if len(matches) < min_matches:
-            continue
-        
-        residuals = matches['Residual'].dropna().values
+    for key, residuals in resid_lookup.items():
         if len(residuals) < 10:
             continue
+        div, team, season = key
         
         # Runs test (above/below median)
         median_res = np.median(residuals)
         signs = (residuals > median_res).astype(int)
         runs = 1 + np.sum(signs[1:] != signs[:-1])
-        n_pos = np.sum(signs)
+        n_pos = int(np.sum(signs))
         n_neg = len(signs) - n_pos
         expected_runs = 1 + 2 * n_pos * n_neg / (n_pos + n_neg)
-        runs_var = (2 * n_pos * n_neg * (2 * n_pos * n_neg - n_pos - n_neg)) / \
-                   ((n_pos + n_neg)**2 * (n_pos + n_neg - 1))
-        runs_z = (runs - expected_runs) / np.sqrt(runs_var) if runs_var > 0 else 0
+        runs_var = ((2 * n_pos * n_neg * (2 * n_pos * n_neg - n_pos - n_neg))
+                    / ((n_pos + n_neg) ** 2 * (n_pos + n_neg - 1)))
+        runs_z = (runs - expected_runs) / np.sqrt(runs_var) if runs_var > 0 else 0.0
         
         # Lag-1 autocorrelation
-        acf1 = np.corrcoef(residuals[:-1], residuals[1:])[0,1] if len(residuals) > 1 else 0
+        acf1 = np.corrcoef(residuals[:-1], residuals[1:])[0, 1] if len(residuals) > 1 else 0.0
         
         streakiness.append({
             'Div': div, 'Team': team, 'Season': season,
@@ -621,7 +604,7 @@ def analyze_volatility_streakiness(team_matches: pd.DataFrame, team_season: pd.D
             'Expected_Runs': expected_runs,
             'Runs_Z': runs_z,
             'ACF1': acf1,
-            'Residual_Std': np.std(residuals),
+            'Residual_Std': float(np.std(residuals)),
         })
     
     results['streakiness'] = pd.DataFrame(streakiness)
@@ -629,36 +612,31 @@ def analyze_volatility_streakiness(team_matches: pd.DataFrame, team_season: pd.D
     # Permutation test for streakiness (within-season shuffle)
     perm_results = []
     n_perm = 20
-    for _, season_row in residual_disp.iterrows():
-        div, team, season = season_row['Div'], season_row['Team'], season_row['Season']
-        matches = team_matches_valid[(team_matches_valid['Div']==div) & 
-                                     (team_matches_valid['Team']==team) & 
-                                     (team_matches_valid['Season']==season)].copy()
-        if len(matches) < min_matches:
-            continue
-        
-        residuals = matches['Residual'].dropna().values
+    for key, residuals in resid_lookup.items():
         if len(residuals) < 10:
             continue
+        div, team, season = key
         
-        # Observed runs Z
+        # Observed runs Z (median is permutation-invariant, so n_pos/expected_runs
+        # are constant across permutations; only the run count changes)
         median_res = np.median(residuals)
         signs = (residuals > median_res).astype(int)
         obs_runs = 1 + np.sum(signs[1:] != signs[:-1])
-        n_pos = np.sum(signs)
+        n_pos = int(np.sum(signs))
         n_neg = len(signs) - n_pos
         expected_runs = 1 + 2 * n_pos * n_neg / (n_pos + n_neg)
-        runs_var = (2 * n_pos * n_neg * (2 * n_pos * n_neg - n_pos - n_neg)) / \
-                   ((n_pos + n_neg)**2 * (n_pos + n_neg - 1))
-        obs_runs_z = (obs_runs - expected_runs) / np.sqrt(runs_var) if runs_var > 0 else 0
+        runs_var = ((2 * n_pos * n_neg * (2 * n_pos * n_neg - n_pos - n_neg))
+                    / ((n_pos + n_neg) ** 2 * (n_pos + n_neg - 1)))
+        obs_runs_z = (obs_runs - expected_runs) / np.sqrt(runs_var) if runs_var > 0 else 0.0
         
-        # Permutation distribution
+        # Permutation distribution: sign median is constant (same values), so
+        # perm_signs is a random rearrangement of the same sign pattern.
         perm_zs = []
         for _ in range(n_perm):
             perm_res = np.random.permutation(residuals)
-            perm_signs = (perm_res > np.median(perm_res)).astype(int)
+            perm_signs = (perm_res > median_res).astype(int)
             perm_runs = 1 + np.sum(perm_signs[1:] != perm_signs[:-1])
-            perm_z = (perm_runs - expected_runs) / np.sqrt(runs_var) if runs_var > 0 else 0
+            perm_z = (perm_runs - expected_runs) / np.sqrt(runs_var) if runs_var > 0 else 0.0
             perm_zs.append(perm_z)
         
         p_value = (np.sum(np.abs(perm_zs) >= np.abs(obs_runs_z)) + 1) / (n_perm + 1)
@@ -683,6 +661,7 @@ def analyze_volatility_streakiness(team_matches: pd.DataFrame, team_season: pd.D
         results['team_streakiness_summary'] = team_streak.sort_values('Avg_Runs_Z')
     
     return results
+
 
 
 def analyze_pooled_vs_within_league(team_season: pd.DataFrame, min_matches: int = 20) -> Dict:
