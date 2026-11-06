@@ -264,3 +264,25 @@ python /tmp/opencode/optimized_timing.py   # (or re-run run_analysis.py)
 - `pyproject.toml` — registered `perf` pytest marker
 
 **Uncommitted user change preserved:** `run_analysis.py` (fresh-insights wiring) was left untouched. Nothing was committed or pushed.
+
+---
+
+## Benchmark reconciliation (2026-11-06)
+
+The latest committed `output/metadata/manifest.json` records a **total stage runtime of
+247.1 s** (≈ 4 min 7 s) for the full workload (8 leagues × 7 seasons, 23,787 matches),
+with visualization the dominant stage at ≈ 133 s (~54%). This differs from the
+≈ 145 s "after" figure quoted above. The discrepancy exists because the two
+numbers were not measured under the same configuration:
+
+- The ≈ 145 s figure sums the optimized per-stage timings from the
+  pre-optimization refactor and excludes artifact generation/export.
+- The 247.1 s figure is the end-to-end manifest total of the current committed
+  code, measured with `time.perf_counter()` around every stage including
+  artifact generation (parquet/CSV export) and visualization on the full data.
+
+`run_analysis.py` now writes `manifest.json` last so `artifact_generation` is
+included in the reported timings, and also records an independent
+`total_wall_clock_seconds`. `output/metadata/manifest.json` is the source of
+truth for the current configuration; the ≈ 145 s figure should be treated as
+stale until re-measured against the same configuration.

@@ -85,36 +85,65 @@ def _decode_csv_bytes(raw: bytes) -> bytes:
 
 
 def read_csv_from_zip(zip_path: Path, csv_name: str,
-                      usecols: Optional[List[str]] = None) -> pl.DataFrame:
+                      usecols: Optional[List[str]] = None,
+                      zf: Optional[zipfile.ZipFile] = None) -> pl.DataFrame:
     """Read a CSV from a zip archive, handling UTF-8 and Latin-1 encodings.
 
-    The whole ZIP member is read into memory once and decoded before being
-    handed to Polars. Polars cannot transparently stream a single member of a
-    ZIP archive, so we materialize the member bytes (small CSV files) and
-    parse via ``pl.read_csv`` on a byte stream. Missing columns requested in
-    ``usecols`` are added as nulls rather than raising.
+    The ZIP member is read into memory once and decoded before being handed to
+    Polars. Polars cannot transparently stream a single member of a ZIP
+    archive, so we materialize the member bytes (small CSV files) and parse via
+    ``pl.read_csv`` on a byte stream. An already-open archive handle can be
+    passed in ``zf`` so the archive is not re-opened for every member.
+
+    Only the columns requested in ``usecols`` that are present in the file are
+    parsed: the header is inspected first and the rest (e.g. betting columns)
+    is never materialized by the parser. Missing requested columns are added as
+    nulls rather than raising, so concatenation across leagues keeps a stable
+    schema.
     """
-    with zipfile.ZipFile(zip_path, 'r') as z:
-        if csv_name not in z.namelist():
+    own_handle = zf is None
+    if own_handle:
+        zf = zipfile.ZipFile(zip_path, 'r')
+    try:
+        if csv_name not in zf.namelist():
             return pl.DataFrame()
-        raw = z.read(csv_name)
+        raw = zf.read(csv_name)
+    finally:
+        if own_handle:
+            zf.close()
 
     data = _decode_csv_bytes(raw)
-
-    # Read all columns present in the file. Polars infers types; Date is read
-    # as a string and explicitly parsed downstream so DD/MM/YYYY is handled
-    # deterministically (no MM/DD ambiguity).
-    df = pl.read_csv(io.BytesIO(data), try_parse_dates=False, infer_schema_length=1000)
+    # football-data.co.uk files may start with a UTF-8 BOM; strip it so header
+    # matching is reliable.
+    if data.startswith(b'\xef\xbb\xbf'):
+        data = data[3:]
 
     if usecols is None:
-        return df
+        return pl.read_csv(io.BytesIO(data), try_parse_dates=False, infer_schema_length=1000)
 
-    present = set(df.columns)
-    select_exprs = []
+    # Inspect the header only and ask Polars to parse just the requested
+    # columns that exist in the file; betting columns are never parsed.
+    header_line = data.split(b'\n', 1)[0].decode('utf-8', errors='replace')
+    present = [name.strip() for name in header_line.split(',')]
+    select_cols = [col for col in usecols if col in present]
+
+    if not select_cols:
+        # Nothing to parse: return every requested column as nulls.
+        return pl.DataFrame({
+            col: pl.Series([], dtype=pl.Int64 if col in _NUMERIC_CORE_COLS else pl.Utf8)
+            for col in usecols
+        })
+
+    df = pl.read_csv(
+        io.BytesIO(data),
+        try_parse_dates=False,
+        infer_schema_length=1000,
+        columns=select_cols,
+    )
+
+    select_exprs = [pl.col(col) for col in usecols if col in df.columns]
     for col in usecols:
-        if col in present:
-            select_exprs.append(pl.col(col))
-        else:
+        if col not in df.columns:
             # Column not available for this league/competition: represent as
             # null. Numeric core columns get Int64, everything else Utf8, so
             # that concatenation across leagues keeps a stable schema.
@@ -167,7 +196,9 @@ def load_season(zip_path: Path,
             if csv_name not in namelist:
                 continue
             league_usecols = _usecols_for_league(league, usecols)
-            df = read_csv_from_zip(zip_path, csv_name, usecols=league_usecols)
+            # Read through the already-open archive instead of re-opening it
+            # for every league member.
+            df = read_csv_from_zip(zip_path, csv_name, usecols=league_usecols, zf=z)
             if df.is_empty():
                 continue
             df = df.with_columns(pl.lit(zip_path.parent.name).alias('Season'))
@@ -316,11 +347,37 @@ def audit_data_quality(master: pl.DataFrame, team_matches: pl.DataFrame) -> Dict
         'FTHG': int(master.filter(pl.col('FTHG') < 0).height) if 'FTHG' in master.columns else 0,
         'FTAG': int(master.filter(pl.col('FTAG') < 0).height) if 'FTAG' in master.columns else 0,
     }
+
+    def _shot_anomaly_fixtures(cond_expr: pl.Expr) -> List[Dict]:
+        """Return fixture identifiers for shots-below-shots-on-target rows.
+
+        Shots on target cannot exceed total shots under the standard
+        definitions; affected fixtures are recorded (not silently modified) so
+        downstream analyses can apply a documented exclusion policy.
+        """
+        key_cols = ['Div', 'Season', 'Date', 'HomeTeam', 'AwayTeam']
+        if not set(key_cols) <= set(master.columns) or not {'HS', 'HST', 'AS', 'AST'} <= set(master.columns):
+            return []
+        return (
+            master.filter(cond_expr)
+            .select([
+                pl.col('Div'),
+                pl.col('Season'),
+                pl.col('Date').cast(pl.Utf8).alias('Date'),
+                pl.col('HomeTeam'),
+                pl.col('AwayTeam'),
+                pl.col('HS'), pl.col('HST'), pl.col('AS'), pl.col('AST'),
+            ])
+            .to_dicts()
+        )
+
     issues['shots_lt_sot'] = {
         'home': int(master.filter(pl.col('HS') < pl.col('HST')).height)
-                  if {'HS', 'HST'} <= set(master.columns) else 0,
+                if {'HS', 'HST'} <= set(master.columns) else 0,
         'away': int(master.filter(pl.col('AS') < pl.col('AST')).height)
                 if {'AS', 'AST'} <= set(master.columns) else 0,
+        'home_fixtures': _shot_anomaly_fixtures(pl.col('HS') < pl.col('HST')),
+        'away_fixtures': _shot_anomaly_fixtures(pl.col('AS') < pl.col('AST')),
     }
 
     # Result consistency: FTR must match goal comparison

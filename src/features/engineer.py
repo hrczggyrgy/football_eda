@@ -286,8 +286,15 @@ def compute_consistency_metrics(team_matches: pl.DataFrame,
     out = out.with_columns(
         pl.col('Points').shift(1).over(TEAM_SEASON_GROUP).alias('points_lag1')
     )
+    # Correct order: apply the rolling window per team-seasons first, then
+    # broadcast back. ``rolling_std().over(group)`` keeps each team-season's
+    # window strictly inside its own group; the reverse order
+    # (``col.over(group).rolling_std(...)``) evaluates the roll across the
+    # whole column and leaks observations across team-season boundaries.
     out = out.with_columns(
-        pl.col('points_lag1').over(TEAM_SEASON_GROUP).rolling_std(5, min_samples=3)
+        pl.col('points_lag1')
+        .rolling_std(5, min_samples=3)
+        .over(TEAM_SEASON_GROUP)
         .alias('Points_Rolling5_Std')
     )
 
