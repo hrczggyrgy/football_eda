@@ -706,11 +706,16 @@ def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
     )
     # Reorient historical points to the focal team's (T1's) perspective.
     # pts_hist is the points earned by T1_hist's team. If the focal team was
-    # T2 in the historical match (T1 != T1_hist), invert: 3->0, 1->1, 0->3.
+    # T2 in the historical match (T1 != T1_hist), invert points from the
+    # opponent's perspective: win(3)->0, draw(1)->1, loss(0)->3. Nulls stay
+    # null (unmatched historical encounters).
+    opponent_points = pl.col("pts_hist").replace_strict(
+        {0: 3, 1: 1, 3: 0}, default=None
+    )
     joined = joined.with_columns(
         pl.when(pl.col("T1") == pl.col("T1_hist"))
         .then(pl.col("pts_hist"))
-        .otherwise(3 - pl.col("pts_hist"))
+        .otherwise(opponent_points)
         .alias("focal_pts_hist")
     )
     # Limit to last 5 historical encounters per pair per date.

@@ -174,3 +174,97 @@ def test_predict_fixture_uses_supplied_season_not_latest_history():
         cutoff_date="2021-09-12",
     )
     assert abs(p2.outcome_probs_sum() - 1.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Training-cutoff enforcement regression tests (fail-closed)
+# ---------------------------------------------------------------------------
+def _bundle_with_cutoff(cutoff_value):
+    """Build a bundle with a specific training_cutoff metadata value."""
+    b, master, tm = _bundle()
+    meta = dict(b.metadata)
+    meta["training_cutoff"] = cutoff_value
+    return PredictionBundle(
+        b.model, b.model_name, meta, b.feature_names,
+        cutoff_date=cutoff_value, cutoff_season="2122"
+    ), master, tm
+
+
+def test_cutoff_missing_metadata_rejected():
+    """Missing bundle cutoff metadata → reject (fail-closed)."""
+    bundle, master, tm = _bundle_with_cutoff(None)
+    with pytest.raises(ValueError, match="missing or invalid training cutoff"):
+        predict_fixture(
+            "E0", "2021-09-13", "T0", "T1", bundle, master, tm,
+            season="2122",
+        )
+
+
+def test_cutoff_malformed_metadata_rejected():
+    """Malformed bundle cutoff metadata → reject (fail-closed)."""
+    bundle, master, tm = _bundle_with_cutoff("not-a-date")
+    with pytest.raises(ValueError, match="missing or invalid training cutoff"):
+        predict_fixture(
+            "E0", "2021-09-13", "T0", "T1", bundle, master, tm,
+            season="2122",
+        )
+
+
+def test_cutoff_fixture_before_cutoff_rejected():
+    """Fixture at/before bundle cutoff → reject."""
+    bundle, master, tm = _bundle()
+    # Fixture on the cutoff date (2021-09-12) is not out-of-sample.
+    with pytest.raises(ValueError, match="at or before its training cutoff"):
+        predict_fixture(
+            "E0", "2021-09-12", "T0", "T1", bundle, master, tm,
+            season="2122",
+        )
+    # Fixture before the cutoff date is also rejected.
+    with pytest.raises(ValueError, match="at or before its training cutoff"):
+        predict_fixture(
+            "E0", "2021-09-11", "T0", "T1", bundle, master, tm,
+            season="2122",
+        )
+
+
+def test_cutoff_fixture_after_cutoff_proceeds():
+    """Fixture after bundle cutoff → proceed."""
+    bundle, master, tm = _bundle()
+    p = predict_fixture(
+        "E0", "2021-09-13", "T0", "T1", bundle, master, tm,
+        season="2122",
+    )
+    assert abs(p.outcome_probs_sum() - 1.0) < 1e-6
+
+
+def test_cutoff_caller_supplied_cannot_bypass():
+    """An earlier caller-supplied cutoff_date cannot override bundle cutoff."""
+    bundle, master, tm = _bundle()
+    # Even with an earlier caller cutoff, the bundle cutoff (2021-09-12)
+    # still governs. A fixture on 2021-09-12 is rejected.
+    with pytest.raises(ValueError, match="at or before its training cutoff"):
+        predict_fixture(
+            "E0", "2021-09-12", "T0", "T1", bundle, master, tm,
+            cutoff_date="2020-01-01", season="2122",
+        )
+
+
+def test_cutoff_unknown_league_cannot_bypass_provenance():
+    """Unknown league still requires valid bundle cutoff provenance."""
+    bundle, master, tm = _bundle_with_cutoff(None)
+    # Missing cutoff → reject before reaching the unknown-league fallback.
+    with pytest.raises(ValueError, match="missing or invalid training cutoff"):
+        predict_fixture(
+            "ZZ", "2021-09-13", "T0", "T1", bundle, master, tm,
+            season="2122",
+        )
+
+    # Valid cutoff + unknown league → fallback (not rejection), but provenance
+    # was already validated.
+    bundle2, master2, tm2 = _bundle()
+    p = predict_fixture(
+        "ZZ", "2021-09-13", "T0", "T1", bundle2, master2, tm2,
+        season="2122",
+    )
+    assert p.data_quality_status == "fallback_unknown_team_or_league"
+    assert abs(p.outcome_probs_sum() - 1.0) < 1e-6

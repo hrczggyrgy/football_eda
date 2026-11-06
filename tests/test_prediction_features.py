@@ -136,3 +136,142 @@ def test_missing_statistics_not_zero():
     assert p.height == 1
     shots = p.select("Home_Shots_L5").to_series()[0]
     assert shots is None or (isinstance(shots, float) and shots != shots), shots
+
+
+# ---------------------------------------------------------------------------
+# H2H draw reorientation regression tests
+# ---------------------------------------------------------------------------
+def _h2h_master():
+    """Two teams meet twice; the second match is the target fixture."""
+    return [
+        # Match 1: X (home) vs Y (away) = 1-1 draw.
+        {"Div": "E0", "Season": "2122", "Date": date(2021, 9, 10),
+         "HomeTeam": "X", "AwayTeam": "Y", "FTHG": 1, "FTAG": 1,
+         "HTHG": 1, "HTAG": 1, "HTR": "D"},
+        # Match 2: Y (home) vs X (away) = target fixture.
+        {"Div": "E0", "Season": "2122", "Date": date(2021, 9, 20),
+         "HomeTeam": "Y", "AwayTeam": "X", "FTHG": 2, "FTAG": 1,
+         "HTHG": 1, "HTAG": 0, "HTR": "H"},
+    ]
+
+
+def test_h2h_draw_inversion_same_perspective():
+    """When the historical row is stored from the focal team's perspective,
+    draw points are preserved (1 -> 1)."""
+    master = _make_master_from_rows(_h2h_master())
+    tm = _tm(master)
+    f = build_pre_match_features(tm)
+    p = pair_match_features(f)
+
+    # Target fixture: Y (home) vs X (away), match 2.
+    target = p.filter(
+        (pl.col("Date") == date(2021, 9, 20)) &
+        (pl.col("HomeTeam") == "Y") &
+        (pl.col("AwayTeam") == "X")
+    )
+    assert target.height == 1
+    # Y's historical draw against X: 1 point (not 2).
+    h2h_ppg = target.select("Home_H2H_PPG").to_series()[0]
+    assert h2h_ppg == 1.0, f"Expected Home_H2H_PPG=1.0 for draw, got {h2h_ppg}"
+    assert target.select("Home_H2H_Matches").to_series()[0] == 1
+
+
+def test_h2h_draw_inversion_opponent_perspective():
+    """When the historical row is stored from the opponent's perspective,
+    draw points are still preserved (1 -> 1), not inverted to 2."""
+    master = _make_master_from_rows(_h2h_master())
+    tm = _tm(master)
+    f = build_pre_match_features(tm)
+    p = pair_match_features(f)
+
+    # Target fixture from X's perspective: X (home) vs Y (away) would be
+    # match 1 itself; instead check X's row in match 2 context is not present
+    # since match 2 is Y home vs X away. Check X's H2H in match 2 row.
+    target = p.filter(
+        (pl.col("Date") == date(2021, 9, 20)) &
+        (pl.col("HomeTeam") == "Y") &
+        (pl.col("AwayTeam") == "X")
+    )
+    assert target.height == 1
+    # X's historical draw against Y: 1 point (not 2).
+    h2h_ppg = target.select("Away_H2H_PPG").to_series()[0]
+    assert h2h_ppg == 1.0, f"Expected Away_H2H_PPG=1.0 for draw, got {h2h_ppg}"
+
+
+def test_h2h_win_loss_inversion():
+    """Win/loss points invert correctly when historical perspective differs."""
+    rows = [
+        # Match 1: X (home) beats Y (away) 2-0. X gets 3, Y gets 0.
+        {"Div": "E0", "Season": "2122", "Date": date(2021, 9, 10),
+         "HomeTeam": "X", "AwayTeam": "Y", "FTHG": 2, "FTAG": 0,
+         "HTHG": 1, "HTAG": 0, "HTR": "H"},
+        # Match 2: Y (home) vs X (away) = target fixture.
+        {"Div": "E0", "Season": "2122", "Date": date(2021, 9, 20),
+         "HomeTeam": "Y", "AwayTeam": "X", "FTHG": 1, "FTAG": 1,
+         "HTHG": 0, "HTAG": 0, "HTR": "D"},
+    ]
+    master = _make_master_from_rows(rows)
+    tm = _tm(master)
+    f = build_pre_match_features(tm)
+    p = pair_match_features(f)
+
+    target = p.filter(
+        (pl.col("Date") == date(2021, 9, 20)) &
+        (pl.col("HomeTeam") == "Y") &
+        (pl.col("AwayTeam") == "X")
+    )
+    assert target.height == 1
+    # Y's historical loss against X: 0 points.
+    h2h_ppg = target.select("Home_H2H_PPG").to_series()[0]
+    assert h2h_ppg == 0.0, f"Expected Home_H2H_PPG=0.0 for loss, got {h2h_ppg}"
+
+
+def test_h2h_first_encounter_null():
+    """First encounter between a pair has no historical H2H (null, not 0)."""
+    rows = [
+        # Only match: X (home) vs Y (away). No prior H2H.
+        {"Div": "E0", "Season": "2122", "Date": date(2021, 9, 10),
+         "HomeTeam": "X", "AwayTeam": "Y", "FTHG": 1, "FTAG": 0,
+         "HTHG": 1, "HTAG": 0, "HTR": "H"},
+    ]
+    master = _make_master_from_rows(rows)
+    tm = _tm(master)
+    f = build_pre_match_features(tm)
+    p = pair_match_features(f)
+
+    target = p.filter(
+        (pl.col("Date") == date(2021, 9, 10)) &
+        (pl.col("HomeTeam") == "X") &
+        (pl.col("AwayTeam") == "Y")
+    )
+    assert target.height == 1
+    h2h_ppg = target.select("Home_H2H_PPG").to_series()[0]
+    assert h2h_ppg is None or (isinstance(h2h_ppg, float) and h2h_ppg != h2h_ppg), h2h_ppg
+    h2h_n = target.select("Home_H2H_Matches").to_series()[0]
+    assert h2h_n is None or h2h_n == 0, h2h_n
+
+
+def _make_master_from_rows(rows):
+    """Build a master match frame from raw match dicts (HTR included)."""
+    df = pl.DataFrame(rows)
+    for c in ["FTHG", "FTAG", "HTHG", "HTAG", "HS", "AS", "HST", "AST",
+              "HF", "AF", "HC", "AC", "HY", "AY", "HR", "AR"]:
+        if c not in df.columns:
+            df = df.with_columns(pl.lit(None).cast(pl.Int64).alias(c))
+    if "FTR" not in df.columns:
+        df = df.with_columns(
+            pl.when(pl.col("FTHG") > pl.col("FTAG")).then(pl.lit("H"))
+            .when(pl.col("FTHG") < pl.col("FTAG")).then(pl.lit("A"))
+            .otherwise(pl.lit("D")).alias("FTR")
+        )
+    if "Date" in df.columns and df["Date"].dtype != pl.Date:
+        df = df.with_columns(pl.col("Date").cast(pl.Date))
+    if "Season" not in df.columns:
+        df = df.with_columns(pl.lit("2122").alias("Season"))
+    if "Div" not in df.columns:
+        df = df.with_columns(pl.lit("E0").alias("Div"))
+    if "Time" not in df.columns:
+        df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("Time"))
+    if "Referee" not in df.columns:
+        df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("Referee"))
+    return df.sort(["Div", "Date"])

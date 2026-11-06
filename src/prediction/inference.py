@@ -226,18 +226,54 @@ def predict_fixture(
     """
     set_seed(DEFAULT_SEED)
     date_str = str(date) if not isinstance(date, str) else date
-    if cutoff_date is None:
-        cutoff_date = bundle.cutoff_date
-    cutoff_str = str(cutoff_date) if cutoff_date is not None else None
 
-    # Enforce the model-training cutoff: never provide an out-of-sample
-    # prediction for a fixture at or before the bundle's training cutoff.
-    bundle_cutoff = None
-    if cutoff_str:
+    # Fail-closed: always validate the model's training provenance before any
+    # forecast or fallback return. Missing or malformed cutoff metadata means
+    # we cannot verify out-of-sample status.
+    bundle_training_cutoff = None
+    if bundle.cutoff_date:
         try:
-            bundle_cutoff = datetime.strptime(cutoff_str[:10], "%Y-%m-%d").date()
+            bundle_training_cutoff = datetime.strptime(
+                str(bundle.cutoff_date)[:10], "%Y-%m-%d"
+            ).date()
         except ValueError:
-            bundle_cutoff = None
+            bundle_training_cutoff = None
+    if bundle_training_cutoff is None:
+        raise ValueError(
+            "This model bundle has missing or invalid training cutoff metadata "
+            f"({bundle.cutoff_date!r}). Cannot verify out-of-sample provenance."
+        )
+
+    # Parse the fixture date so the training-cutoff check can run before any
+    # fallback return.
+    from datetime import date as _date
+    try:
+        if "-" in date_str:
+            # ISO format: 2026-11-04
+            pred_date = _date.fromisoformat(date_str)
+        else:
+            # DD/MM/YYYY (4-digit year), e.g. 04/11/2026
+            pred_date = datetime.strptime(date_str, "%d/%m/%Y").date()
+    except (ValueError, AttributeError):
+        # football-data.co.uk style DD/MM/YY (2-digit year), e.g. 04/11/26.
+        # Maps 00-49 -> 2000-2049, 50-99 -> 1950-1999.
+        try:
+            pred_date = datetime.strptime(date_str, "%d/%m/%y").date()
+        except (ValueError, AttributeError):
+            pred_date = _date.fromisoformat(str(date_str)[:10])
+
+    # Enforce the model-training cutoff before any forecast or fallback
+    # return. An optional caller-supplied feature-history cutoff restricts
+    # which history rows are used to build features, but never overrides the
+    # bundle's training provenance.
+    if pred_date <= bundle_training_cutoff:
+        raise ValueError(
+            "This bundle cannot provide an out-of-sample prediction "
+            f"for a fixture at or before its training cutoff "
+            f"({bundle_training_cutoff})."
+        )
+
+    cutoff_str = str(bundle_training_cutoff)
 
     warnings: List[str] = []
 
@@ -263,32 +299,6 @@ def predict_fixture(
         unknown.append(away_team)
     if unknown:
         warnings.append(f"Unknown team(s) in {division}: {unknown}; fallback prior used")
-
-    # Build a synthetic target row so the feature engine can compute pre-match
-    # features from the available history (history must end before the fixture).
-    # Use history truncated to strictly before the fixture date to honor the
-    # same-day safeguard (no same-date results leak into the target's features).
-    from datetime import date as _date
-    try:
-        if "-" in date_str:
-            # ISO format: 2026-11-04
-            pred_date = _date.fromisoformat(date_str)
-        else:
-            # DD/MM/YYYY (4-digit year), e.g. 04/11/2026
-            pred_date = datetime.strptime(date_str, "%d/%m/%Y").date()
-    except (ValueError, AttributeError):
-        # football-data.co.uk style DD/MM/YY (2-digit year), e.g. 04/11/26.
-        # Maps 00-49 -> 2000-2049, 50-99 -> 1950-1999.
-        try:
-            pred_date = datetime.strptime(date_str, "%d/%m/%y").date()
-        except (ValueError, AttributeError):
-            pred_date = _date.fromisoformat(str(date_str)[:10])
-
-    if bundle_cutoff is not None and pred_date <= bundle_cutoff:
-        raise ValueError(
-            "This bundle cannot provide an out-of-sample prediction "
-            f"for a fixture at or before its training cutoff ({cutoff_str})."
-        )
 
     # History strictly before the fixture date (same-day safeguard).
     select_cols = [c for c in CORE_COLS + ["Season"] if c in history_matches.columns]
