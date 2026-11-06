@@ -266,12 +266,15 @@ def predict_fixture(
     # same-day safeguard (no same-date results leak into the target's features).
     from datetime import date as _date
     try:
-        pred_date = _date.fromisoformat(date_str) if "-" in date_str else \
-            _date.strptime(date_str, "%d/%m/%Y").date()
+        if "-" in date_str:
+            # ISO format: 2026-11-04
+            pred_date = _date.fromisoformat(date_str)
+        else:
+            # DD/MM/YYYY (4-digit year), e.g. 04/11/2026
+            pred_date = datetime.strptime(date_str, "%d/%m/%Y").date()
     except (ValueError, AttributeError):
-        # football-data.co.uk style DD/MM/YY (2-digit year) is not handled by
-        # %d/%m/%Y. Try a 2-digit-year form, mapping 00-49 -> 2000-2049,
-        # 50-99 -> 1950-1999.
+        # football-data.co.uk style DD/MM/YY (2-digit year), e.g. 04/11/26.
+        # Maps 00-49 -> 2000-2049, 50-99 -> 1950-1999.
         try:
             pred_date = datetime.strptime(date_str, "%d/%m/%y").date()
         except (ValueError, AttributeError):

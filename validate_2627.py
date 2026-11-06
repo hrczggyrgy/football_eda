@@ -65,7 +65,9 @@ def main(results_csv: Optional[Path] = None):
         print("  python validate_2627.py /path/to/latest_results_2627.csv")
         sys.exit(1)
 
-    csv_text = csv_path.read_text()
+    # utf-8-sig strips a leading BOM (common in football-data.co.uk exports)
+    # so the first header column is "Div" rather than "\ufeffDiv".
+    csv_text = csv_path.read_text(encoding="utf-8-sig")
     lines = csv_text.strip().split("\n")
     header = lines[0].split(",")
     rows = [l.split(",") for l in lines[1:] if l.strip()]
