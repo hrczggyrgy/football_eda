@@ -50,6 +50,11 @@ def main(results_csv: Optional[Path] = None):
             bundle_cutoff = datetime.strptime(str(bundle.cutoff_date)[:10], "%Y-%m-%d").date()
         except ValueError:
             bundle_cutoff = None
+    if bundle_cutoff is None:
+        print(f"ERROR: Model bundle has missing or invalid training cutoff metadata "
+              f"({bundle.cutoff_date!r}). Cannot verify out-of-sample provenance.")
+        print("Rebuild the model bundle with corrected code before validating.")
+        sys.exit(1)
 
     # ---- Load historical training data ----
     DATA_DIR = Path(".")
@@ -221,7 +226,8 @@ def main(results_csv: Optional[Path] = None):
     print("=" * 70)
     print("PREDICTION VALIDATION vs 2627 RESULTS (football-data.co.uk)")
     print("=" * 70)
-    print(f"Fixtures in CSV:     {len(results)}")
+    print(f"Fixtures in CSV:     {len(results) + n_rejected_cutoff}")
+    print(f"Rejected at cutoff:  {n_rejected_cutoff}")
     print(f"Valid predictions:   {n_valid}")
     print(f"Errors / unknown:    {len(results) - n_valid}")
     print()
@@ -257,7 +263,8 @@ def main(results_csv: Optional[Path] = None):
 
     # Summary JSON
     summary = {
-        "n_fixtures": len(results),
+        "n_fixtures": len(results) + n_rejected_cutoff,
+        "n_rejected_cutoff": n_rejected_cutoff,
         "n_valid": n_valid,
         "accuracy": round(accuracy, 4),
         "brier": round(brier, 4),

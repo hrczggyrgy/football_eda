@@ -151,8 +151,12 @@ class PredictionBundle:
 
 
 def _empty_prediction(date: str, league: str, home: str, away: str,
-                      model_version: str, cutoff: Optional[str]) -> FixturePrediction:
+                      model_version: str, cutoff: Optional[str],
+                      extra_warning: Optional[str] = None) -> FixturePrediction:
     """Return a fallback prediction with neutral probabilities and recorded warnings."""
+    warnings = ["Unknown team or league; neutral prior used"]
+    if extra_warning:
+        warnings.append(extra_warning)
     return FixturePrediction(
         date=date, league=league, home_team=home, away_team=away,
         home_win_probability=1.0 / 3, draw_probability=1.0 / 3,
@@ -167,7 +171,7 @@ def _empty_prediction(date: str, league: str, home: str, away: str,
         total_goals_interval=(0, 6), interval_coverage=0.8,
         model_version=model_version, training_cutoff=cutoff,
         data_quality_status="fallback_unknown_team_or_league",
-        feature_warnings=["Unknown team or league; neutral prior used"],
+        feature_warnings=warnings,
     )
 
 
@@ -187,23 +191,14 @@ def _season_for_fixture(hist: pl.DataFrame, pred_date: date, season: Optional[st
     """Resolve the fixture's season.
 
     Prefers the caller-supplied season (actual season from the fixture source).
-    Otherwise derives it from the fixture date and validates it against the
-    seasons present in history. Falls back to the latest historical season only
-    when the derived season is not represented in history.
+    Otherwise derives it from the fixture date. The derived season is preserved
+    even when it has no historical rows yet — a brand-new season's opener must
+    keep its own season so prior-season strength enters through prior features,
+    not by relabeling the fixture onto an earlier season.
     """
     if season is not None:
         return season
-    derived = _season_from_date(pred_date)
-    hist_seasons = set(
-        hist.select(pl.col("Season").unique()).to_series().to_list()
-    ) if hist.height and "Season" in hist.columns else set()
-    if derived in hist_seasons:
-        return derived
-    # Derived season not in history (e.g. a brand-new season). Use the latest
-    # historical season chronologically, so prior-season features carry over.
-    if hist_seasons:
-        return max(hist_seasons)
-    return derived
+    return _season_from_date(pred_date)
 
 
 def predict_fixture(
@@ -234,6 +229,15 @@ def predict_fixture(
     if cutoff_date is None:
         cutoff_date = bundle.cutoff_date
     cutoff_str = str(cutoff_date) if cutoff_date is not None else None
+
+    # Enforce the model-training cutoff: never provide an out-of-sample
+    # prediction for a fixture at or before the bundle's training cutoff.
+    bundle_cutoff = None
+    if cutoff_str:
+        try:
+            bundle_cutoff = datetime.strptime(cutoff_str[:10], "%Y-%m-%d").date()
+        except ValueError:
+            bundle_cutoff = None
 
     warnings: List[str] = []
 
@@ -279,6 +283,12 @@ def predict_fixture(
             pred_date = datetime.strptime(date_str, "%d/%m/%y").date()
         except (ValueError, AttributeError):
             pred_date = _date.fromisoformat(str(date_str)[:10])
+
+    if bundle_cutoff is not None and pred_date <= bundle_cutoff:
+        raise ValueError(
+            "This bundle cannot provide an out-of-sample prediction "
+            f"for a fixture at or before its training cutoff ({cutoff_str})."
+        )
 
     # History strictly before the fixture date (same-day safeguard).
     select_cols = [c for c in CORE_COLS + ["Season"] if c in history_matches.columns]

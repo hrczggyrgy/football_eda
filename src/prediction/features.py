@@ -500,12 +500,15 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
         .when(pl.col("focal_gf") == pl.col("focal_ga")).then(pl.lit(1))
         .otherwise(pl.lit(0)).cast(pl.Int64).alias("focal_pts")
     )
+    # Drop rows with no historical encounter (null hist columns) so that
+    # first encounters do not masquerade as a historical loss with 0 points.
+    joined = joined.filter(pl.col("gf_hist").is_not_null())
     # Aggregate historical encounters per (Div, Season, Date, T1, T2).
     agg = joined.group_by(["Div", "Season", "Date", "T1", "T2"]).agg([
         pl.col("focal_pts").mean().alias("H2H_PPG"),
         pl.col("focal_gf").mean().alias("H2H_GF_PG"),
         pl.col("focal_ga").mean().alias("H2H_GA_PG"),
-        pl.len().alias("H2H_Matches"),
+        pl.col("focal_pts").count().alias("H2H_Matches"),
     ])
     # Map back: the focal row's team is T1.
     out = out.join(agg, left_on=["Div", "Season", "Date", "Team", "Opponent"],
@@ -701,15 +704,25 @@ def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
         allow_exact_matches=False,
         suffix="_hist",
     )
+    # Reorient historical points to the focal team's (T1's) perspective.
+    # pts_hist is the points earned by T1_hist's team. If the focal team was
+    # T2 in the historical match (T1 != T1_hist), invert: 3->0, 1->1, 0->3.
+    joined = joined.with_columns(
+        pl.when(pl.col("T1") == pl.col("T1_hist"))
+        .then(pl.col("pts_hist"))
+        .otherwise(3 - pl.col("pts_hist"))
+        .alias("focal_pts_hist")
+    )
     # Limit to last 5 historical encounters per pair per date.
     joined = joined.with_columns(
-        pl.col("pts_hist").cum_count().over(["Div", "Season", "Date", "T1", "T2", "pair_a", "pair_b"]).alias("h2h_order")
+        pl.col("focal_pts_hist").cum_count().over(["Div", "Season", "Date", "T1", "T2", "pair_a", "pair_b"]).alias("h2h_order")
     )
+    joined = joined.filter(pl.col("pts_hist").is_not_null())
     joined = joined.filter(pl.col("h2h_order") <= 5)
 
     agg = joined.group_by(["Div", "Season", "Date", "T1", "T2"]).agg([
-        pl.col("pts_hist").mean().alias("H2H_Recent_PPG"),
-        pl.len().alias("H2H_Recent_Matches"),
+        pl.col("focal_pts_hist").mean().alias("H2H_Recent_PPG"),
+        pl.col("focal_pts_hist").count().alias("H2H_Recent_Matches"),
     ])
     out = out.join(agg, left_on=["Div", "Season", "Date", "Team", "Opponent"],
                    right_on=["Div", "Season", "Date", "T1", "T2"], how="left",
