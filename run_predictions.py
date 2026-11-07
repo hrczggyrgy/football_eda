@@ -40,9 +40,12 @@ from prediction.features import build_pre_match_features, pair_match_features
 from prediction.models import (
     HistoricalBaseline, PoissonModel, MultinomialModel,
     HistGradientBoostingModel,
+    SmallLogisticModel, EloLogisticModel, FittedPoissonModel,
+    RestrictedHGBModel,
 )
-from prediction.validation import (
-    chronological_folds, run_expanding_validation, compare_models_validation,
+from prediction.validation_v2 import (
+    run_chronological_validation, compare_models_validation,
+    keyed_predictions_to_dataframe, compute_league_metrics,
 )
 from prediction.evaluation import outcome_metrics, goal_metrics
 from prediction.calibration import brier_score_multiclass, expected_calibration_error
@@ -161,17 +164,36 @@ def main():
         return PoissonModel(seed=args.seed, use_dixon_coles=False)
 
     def factory_multinomial():
-        return MultinomialModel(seed=args.seed, C=1.0, calibrate=True)
+        return MultinomialModel(seed=args.seed, C=None, calibrate=True)
+
+    def factory_small_logistic():
+        return SmallLogisticModel(seed=args.seed, C=None, calibrate=False)
+
+    def factory_elo_logistic():
+        return EloLogisticModel(seed=args.seed, C=None, calibrate=True)
+
+    def factory_fitted_poisson():
+        return FittedPoissonModel(seed=args.seed, alpha=1.0, use_recency=False)
 
     factories = {
         "historical_baseline": factory_baseline,
         "poisson": factory_poisson,
         "multinomial_logistic": factory_multinomial,
+        "small_logistic": factory_small_logistic,
+        "elo_logistic": factory_elo_logistic,
+        "fitted_poisson": factory_fitted_poisson,
     }
     if not args.skip_hgb:
         def factory_hgb():
             return HistGradientBoostingModel(seed=args.seed)
         factories["hist_gradient_boosting"] = factory_hgb
+    
+    # Add restricted HGB as separate challenger
+    def factory_restricted_hgb():
+        return RestrictedHGBModel(seed=args.seed, max_iter=100, max_leaf_nodes=15,
+                                   min_samples_leaf=50, l2_regularization=1.0,
+                                   max_depth=3, learning_rate=0.05)
+    factories["restricted_hgb"] = factory_restricted_hgb
 
     results = compare_models_validation(
         master, team_matches, factories, seasons=SEASONS, seed=args.seed
@@ -218,6 +240,16 @@ def main():
         })
     comp_df = pl.DataFrame(comp_rows)
     comp_df.write_csv(OUTPUT_DIRS["tables"] / "model_comparison.csv")
+    
+    # Save keyed predictions for auditability (best model)
+    best_name = min(results, key=lambda n: results[n].aggregate.get("brier", float("inf")))
+    best = results[best_name]
+    if hasattr(best, 'all_keyed_predictions') and best.all_keyed_predictions:
+        keyed_df = keyed_predictions_to_dataframe(best.all_keyed_predictions)
+        keyed_df.write_parquet(OUTPUT_DIRS["tables"] / "keyed_predictions.parquet")
+        keyed_df.write_csv(OUTPUT_DIRS["tables"] / "keyed_predictions.csv")
+        print(f"  Saved keyed predictions: {keyed_df.height} rows")
+    
     print(f"  Models compared: {len(comp_rows)}")
     stage_save = time.perf_counter() - t0
 
@@ -269,14 +301,20 @@ def main():
         obs_scores = {s: v / zo for s, v in obs_scores.items()}
         figure_p4_scoreline(pred_scores, obs_scores, OUTPUT_DIRS["figures"])
 
-    # P5 league-specific performance: out-of-sample test volume per league,
-    # with overall Brier as a reference line.
+    # P5 league-specific performance: out-of-sample Brier per league from keyed predictions.
     league_rows = []
-    for d in TARGET_LEAGUES:
-        n = int(master.filter(pl.col("Div") == d).filter(
-            pl.col("Season").is_in(SEASONS[2:])).height)  # test seasons only
-        league_rows.append({"league": d, "n": n,
-                            "brier": best.aggregate.get("brier")})
+    if hasattr(best, 'all_keyed_predictions') and best.all_keyed_predictions:
+        keyed_df = keyed_predictions_to_dataframe(best.all_keyed_predictions)
+        league_metrics = compute_league_metrics(keyed_df)
+        for row in league_metrics.to_dicts():
+            league_rows.append({"league": row["league"], "n": row["n"], "brier": row["brier"]})
+    else:
+        # Fallback: compute from fold predictions
+        for d in TARGET_LEAGUES:
+            n = int(master.filter(pl.col("Div") == d).filter(
+                pl.col("Season").is_in(SEASONS[2:])).height)
+            league_rows.append({"league": d, "n": n,
+                                "brier": best.aggregate.get("brier")})
     figure_p5_league(league_rows, OUTPUT_DIRS["figures"])
 
     # P6 feature importance: standardized coefficients of the selected model
@@ -337,6 +375,16 @@ def main():
         # Multinomial / HGB need the engineered paired features.
         bm.fit(team_matches, paired)
 
+    # Determine actual calibration method used
+    calibration_method = "none"
+    if best_name == "multinomial_logistic" and results[best_name].folds:
+        fold0 = results[best_name].folds[0]
+        if hasattr(fold0, 'keyed_predictions') and fold0.keyed_predictions:
+            # Check if model has calibrator
+            bmf = factories[best_name]()
+            if isinstance(bmf, MultinomialModel):
+                calibration_method = f"{bmf.calibration_method} (OOF)"
+    
     meta = {
         "model_version": MODEL_VERSION,
         "model_name": best_name,
@@ -352,7 +400,7 @@ def main():
         },
         "validation_results": {k: v.aggregate for k, v in results.items()},
         "selected_model": best_name,
-        "calibration_method": "none (reliability diagnostics only)",
+        "calibration_method": calibration_method,
         "data_quality": {
             "missing_goals": int(master.select(pl.col("FTHG").null_count() + pl.col("FTAG").null_count()).to_series()[0]),
         },

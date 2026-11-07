@@ -180,6 +180,10 @@ def build_elo_features(team_matches: pl.DataFrame,
     then the match result updates the ratings. New teams initialize to the
     division mean; the current match result never enters its own prediction.
 
+    CRITICAL: Pre-match ratings for a fixture on date D use ONLY matches with
+    strictly earlier dates. Same-date matches are NOT included (no timestamp
+    ordering available). This ensures training-inference parity.
+
     Output columns (base ratings, home advantage NOT added to the stored value):
     - Elo_Base_Rating: the team's own pre-match base rating.
     - Elo_Opponent_Rating: the opponent's pre-match base rating.
@@ -204,43 +208,61 @@ def build_elo_features(team_matches: pl.DataFrame,
     if matches.is_empty():
         return team_matches
 
-    rows = matches.to_dicts()
-    home_base = []
-    away_base = []
-    exp_home_list = []
-    rating_diff_list = []
-    seen: set = set()
+    # Group matches by division and date. For each date, we need the Elo state
+    # as of the START of that date (before any matches on that date).
+    # We'll process dates in order, computing pre-match ratings for all matches
+    # on that date using the Elo state from the end of the previous date.
+    div_dates = matches.group_by(["Div", "Date"]).agg(
+        pl.len().alias("n_matches")
+    ).sort(["Div", "Date"])
 
-    for row in rows:
-        div = row["Div"]
-        ht, at = row["HomeTeam"], row["AwayTeam"]
-        for t in (ht, at):
-            key = f"{div}|{t}"
-            if key not in seen:
-                elo.initialize_team(div, t)
-                seen.add(key)
-        h_r, a_r = elo.rate(div, ht, at)  # pre-match; home advantage added inside
-        home_base.append(h_r - config.home_advantage)
-        away_base.append(a_r)
-        e_h = elo.expected_score(h_r, a_r)
-        exp_home_list.append(e_h)
-        rating_diff_list.append(h_r - a_r)
-        # Update ratings with this match's result (after recording pre-match state).
-        hg, ag = row["HomeGoals"], row["AwayGoals"]
-        if hg is not None and ag is not None:
-            elo.update(div, ht, at, int(hg), int(ag))
+    # We'll build a lookup of pre-match Elo for each match
+    elo_lookup_rows = []
 
-    elo_lookup = pl.DataFrame({
-        "Div": matches["Div"],
-        "Season": matches["Season"],
-        "Date": matches["Date"],
-        "HomeTeam": matches["HomeTeam"],
-        "AwayTeam": matches["AwayTeam"],
-        "Elo_Home_Base": home_base,
-        "Elo_Away_Base": away_base,
-        "Elo_Exp_Home": exp_home_list,
-        "Elo_Rating_Diff": rating_diff_list,
-    })
+    # Process each division separately
+    for div in matches.select(pl.col("Div").unique()).to_series().to_list():
+        div_matches = matches.filter(pl.col("Div") == div).sort(["Date", "HomeTeam", "AwayTeam"])
+        div_dates_list = div_matches.select(pl.col("Date").unique()).to_series().to_list()
+
+        # Get all matches for this division as dicts
+        div_rows = div_matches.to_dicts()
+
+        for date_val in div_dates_list:
+            # Matches on this date
+            date_matches = [r for r in div_rows if r["Date"] == date_val]
+
+            # Initialize any new teams for this division
+            for row in date_matches:
+                for t in (row["HomeTeam"], row["AwayTeam"]):
+                    key = f"{div}|{t}"
+                    if key not in elo.ratings:
+                        elo.initialize_team(div, t)
+
+            # Record pre-match ratings for all matches on this date
+            # (using the Elo state from end of previous date)
+            for row in date_matches:
+                ht, at = row["HomeTeam"], row["AwayTeam"]
+                h_r, a_r = elo.rate(div, ht, at)  # pre-match; home advantage added inside
+                elo_lookup_rows.append({
+                    "Div": div,
+                    "Season": row["Season"],
+                    "Date": date_val,
+                    "HomeTeam": ht,
+                    "AwayTeam": at,
+                    "Elo_Home_Base": h_r - config.home_advantage,
+                    "Elo_Away_Base": a_r,
+                    "Elo_Exp_Home": elo.expected_score(h_r, a_r),
+                    "Elo_Rating_Diff": h_r - a_r,
+                })
+
+            # After recording pre-match ratings for all matches on this date,
+            # update Elo with the results of these matches
+            for row in date_matches:
+                hg, ag = row["HomeGoals"], row["AwayGoals"]
+                if hg is not None and ag is not None:
+                    elo.update(div, row["HomeTeam"], row["AwayTeam"], int(hg), int(ag))
+
+    elo_lookup = pl.DataFrame(elo_lookup_rows)
 
     out = team_matches
     # Home-perspective rows: own rating = home base, opponent = away base.

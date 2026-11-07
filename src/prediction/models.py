@@ -507,52 +507,94 @@ class MultinomialModel:
         X = matches.select(available).to_numpy().astype(np.float64)
         return X, available
 
-    def _impute_fit(self, X: np.ndarray) -> np.ndarray:
-        """Impute non-finite values with column means (computed on training data)."""
+    def _impute_fit(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Impute non-finite values with column means (computed on training data).
+        
+        Returns imputed X and the impute values for later use.
+        """
         X = X.copy()
-        self.impute_ = np.full(X.shape[1], 0.0, dtype=np.float64)
+        impute_values = np.full(X.shape[1], 0.0, dtype=np.float64)
         for j in range(X.shape[1]):
             col = X[:, j]
             finite = np.isfinite(col)
-            self.impute_[j] = float(np.mean(col[finite])) if np.any(finite) else 0.0
-            X[:, j] = np.where(finite, col, self.impute_[j])
-        return X
+            impute_values[j] = float(np.mean(col[finite])) if np.any(finite) else 0.0
+            X[:, j] = np.where(finite, col, impute_values[j])
+        return X, impute_values
 
-    def _impute_transform(self, X: np.ndarray) -> np.ndarray:
+    def _impute_transform(self, X: np.ndarray, impute_values: Optional[np.ndarray] = None) -> np.ndarray:
         X = X.copy()
+        if impute_values is None:
+            impute_values = getattr(self, "impute_", np.full(X.shape[1], 0.0, dtype=np.float64))
         for j in range(X.shape[1]):
-            fill = self.impute_[j] if hasattr(self, "impute_") and j < len(self.impute_) else 0.0
+            fill = impute_values[j] if j < len(impute_values) else 0.0
             X[:, j] = np.where(np.isfinite(X[:, j]), X[:, j], fill)
         return X
 
     @staticmethod
-    def _inner_chronological_splits(dates: np.ndarray, n_folds: int = 3):
-        """Generate chronological (train_idx, val_idx) splits by unique date.
-
-        Training dates always strictly precede validation dates.
+    def _inner_chronological_splits(dates: np.ndarray, n_folds: int = 3,
+                                     min_train_dates: int = 20) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Generate chronological (train_idx, val_idx) splits by unique date.
+        
+        Uses non-overlapping validation blocks with a substantial initial training period.
+        Same-date fixtures are kept together.
         """
         unique_dates = np.sort(np.unique(dates))
-        if len(unique_dates) < n_folds + 1:
-            return []
-        split_points = np.linspace(1, len(unique_dates) - 1, n_folds).astype(int)
+        if len(unique_dates) < min_train_dates + n_folds:
+            # Fallback to simple expanding window if not enough dates
+            if len(unique_dates) < n_folds + 1:
+                return []
+            split_points = np.linspace(1, len(unique_dates) - 1, n_folds).astype(int)
+            splits = []
+            for sp in split_points:
+                cut = unique_dates[sp]
+                train_idx = np.where(dates < cut)[0]
+                val_idx = np.where(dates >= cut)[0]
+                if len(train_idx) > 0 and len(val_idx) > 0:
+                    splits.append((train_idx, val_idx))
+            return splits
+        
+        # Substantial initial training period
+        train_end = min_train_dates
+        val_block_size = max(1, (len(unique_dates) - train_end) // n_folds)
         splits = []
-        for sp in split_points:
-            cut = unique_dates[sp]
-            train_idx = np.where(dates < cut)[0]
-            val_idx = np.where(dates >= cut)[0]
+        
+        for fold in range(n_folds):
+            val_start = train_end
+            val_end = min(val_start + val_block_size, len(unique_dates) - (n_folds - fold - 1))
+            if val_start >= val_end:
+                break
+            
+            train_dates = unique_dates[:train_end]
+            val_dates = unique_dates[val_start:val_end]
+            
+            train_idx = np.where(np.isin(dates, train_dates))[0]
+            val_idx = np.where(np.isin(dates, val_dates))[0]
+            
             if len(train_idx) > 0 and len(val_idx) > 0:
+                # Check class representation in both splits
                 splits.append((train_idx, val_idx))
+            
+            train_end = val_end
+        
         return splits
 
-    def _fit_base(self, X: np.ndarray, y: np.ndarray, C: float) -> LogisticRegression:
-        scaler = StandardScaler()
-        Xs = scaler.fit_transform(X)
+    def _fit_base(self, X: np.ndarray, y: np.ndarray, C: float,
+                   impute_values: Optional[np.ndarray] = None,
+                   scaler: Optional[StandardScaler] = None) -> Tuple[LogisticRegression, StandardScaler, np.ndarray]:
+        """Fit base model with optional pre-fitted preprocessing."""
+        X_imputed = self._impute_transform(X, impute_values)
+        if scaler is None:
+            scaler = StandardScaler()
+            Xs = scaler.fit_transform(X_imputed)
+        else:
+            Xs = scaler.transform(X_imputed)
         model = LogisticRegression(
             C=C, solver="lbfgs", max_iter=self.max_iter,
             random_state=self.seed,
         )
         model.fit(Xs, y)
-        return model, scaler
+        return model, scaler, impute_values
 
     def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame) -> "MultinomialModel":
         """Fit the multinomial model on engineered paired features.
@@ -560,8 +602,8 @@ class MultinomialModel:
         ``matches`` should be a paired feature frame containing the BASE_FEATURES
         and FTR target. Missing features are imputed with column means fitted on
         the training data (never on the test data). C is tuned via chronological
-        inner validation; calibration is fitted on out-of-fold training
-        predictions only.
+        inner validation with FOLD-LOCAL PREPROCESSING; calibration is fitted on
+        out-of-fold training predictions only.
         """
         import polars as pl
 
@@ -575,10 +617,8 @@ class MultinomialModel:
         if X.shape[0] == 0 or len(np.unique(y)) < 2:
             raise ValueError("Insufficient valid training data for multinomial model.")
 
-        X = self._impute_fit(X)
-
-        # ------------------------------------------------------------------ tune C
-        candidate_Cs = [self.C] if self.C is not None else [0.1, 0.5, 1.0, 2.0, 5.0]
+        # ------------------------------------------------------------------ tune C with FOLD-LOCAL PREPROCESSING
+        candidate_Cs = [self.C] if self.C is not None else [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
         best_C, best_brier = None, float("inf")
         oof_probs_list: List[np.ndarray] = []
         oof_y_list: List[np.ndarray] = []
@@ -594,27 +634,62 @@ class MultinomialModel:
             for cand in candidate_Cs:
                 fold_briers = []
                 for train_idx, val_idx in valid_splits:
-                    m, s = self._fit_base(X[train_idx], y[train_idx], cand)
-                    val_probs = m.predict_proba(s.transform(X[val_idx]))
+                    # FOLD-LOCAL: fit imputer and scaler on training partition only
+                    X_train = X[train_idx]
+                    X_val = X[val_idx]
+                    
+                    # Fit imputer on train
+                    X_train_imputed, impute_values = self._impute_fit(X_train)
+                    # Fit scaler on imputed train
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train_imputed)
+                    # Transform val with train-fitted imputer and scaler
+                    X_val_imputed = self._impute_transform(X_val, impute_values)
+                    X_val_scaled = scaler.transform(X_val_imputed)
+                    
+                    model = LogisticRegression(
+                        C=cand, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed,
+                    )
+                    model.fit(X_train_scaled, y[train_idx])
+                    val_probs = model.predict_proba(X_val_scaled)
                     fold_briers.append(brier_score_multiclass(val_probs, y[val_idx]))
                 mean_brier = float(np.mean(fold_briers))
                 if mean_brier < best_brier:
                     best_brier = mean_brier
                     best_C = cand
-            # Collect OOF predictions using the best C for calibration.
+            
+            # Collect OOF predictions using the best C with fold-local preprocessing
             for train_idx, val_idx in valid_splits:
-                m, s = self._fit_base(X[train_idx], y[train_idx], best_C)
-                val_probs = m.predict_proba(s.transform(X[val_idx]))
+                X_train = X[train_idx]
+                X_val = X[val_idx]
+                y_train = y[train_idx]
+                y_val = y[val_idx]
+                
+                X_train_imputed, impute_values = self._impute_fit(X_train)
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train_imputed)
+                X_val_imputed = self._impute_transform(X_val, impute_values)
+                X_val_scaled = scaler.transform(X_val_imputed)
+                
+                model = LogisticRegression(
+                    C=best_C, solver="lbfgs", max_iter=self.max_iter,
+                    random_state=self.seed,
+                )
+                model.fit(X_train_scaled, y_train)
+                val_probs = model.predict_proba(X_val_scaled)
                 oof_probs_list.append(val_probs)
-                oof_y_list.append(y[val_idx])
+                oof_y_list.append(y_val)
         else:
             best_C = candidate_Cs[0]
 
         self.C_used = float(best_C)
 
-        # ------------------------------------------------------------------ refit on all training data
+        # ------------------------------------------------------------------ refit on all training data with GLOBAL preprocessing (for production use)
+        # For the final production model, we fit imputer and scaler on ALL training data
+        X_imputed, impute_values = self._impute_fit(X)
         self.scaler = StandardScaler()
-        Xs = self.scaler.fit_transform(X)
+        Xs = self.scaler.fit_transform(X_imputed)
         self.model = LogisticRegression(
             C=best_C, solver="lbfgs", max_iter=self.max_iter,
             random_state=self.seed,
@@ -623,6 +698,8 @@ class MultinomialModel:
         self.feature_names = names
         self.fitted = True
         self.classes_ = self.model.classes_.copy()
+        # Store impute values for inference
+        self.impute_ = impute_values
 
         # ------------------------------------------------------------------ goal model (Poisson regression)
         # Fit separate Poisson regressors for home and away goals using the same
@@ -637,8 +714,8 @@ class MultinomialModel:
             ag = np.where(np.isfinite(ag) & (ag >= 0), ag, 0.0)
             self.goal_scaler_h = StandardScaler()
             self.goal_scaler_a = StandardScaler()
-            Xs_h = self.goal_scaler_h.fit_transform(X)
-            Xs_a = self.goal_scaler_a.fit_transform(X)
+            Xs_h = self.goal_scaler_h.fit_transform(X_imputed)
+            Xs_a = self.goal_scaler_a.fit_transform(X_imputed)
             self.goal_model_h = PoissonRegressor(
                 max_iter=self.max_iter,
             )
@@ -1012,4 +1089,837 @@ class EnsembleModel:
                 "multinomial_weight": self.multinomial_weight_used,
                 "components": ["historical_baseline", "multinomial_logistic"],
             },
+        )
+
+
+# =============================================================================
+# Phase D: Model Ladder
+# =============================================================================
+
+# Small feature set for Model 1: ~15 interpretable inputs
+SMALL_LOGISTIC_FEATURES = [
+    # League indicators (match-level)
+    "League_Avg_GF_PG", "League_Avg_GA_PG",
+    # Team strength (prior-season + early season)
+    "Home_Prior_Season_PPG", "Away_Prior_Season_PPG",
+    "Home_PreMatch_PPG_Shrunk", "Away_PreMatch_PPG_Shrunk",
+    # Home/away specific
+    "Home_Home_PPG", "Away_Away_PPG",
+    "Home_Home_GF_PG", "Away_Away_GF_PG",
+    # League table state
+    "Home_Team_PPG_Before", "Away_Team_PPG_Before",
+    "Home_Team_Cum_Matches_Before", "Away_Team_Cum_Matches_Before",
+    # Rest difference
+    "Rest_Days_Diff",
+    # Elo (match-level, already pre-match)
+    "Elo_Rating_Diff", "Elo_Exp_Home",
+    # History exposure
+    "Home_Matches_Cum_Lagged", "Away_Matches_Cum_Lagged",
+]
+
+# Feature set for Model 2: Elo + logistic
+ELO_LOGISTIC_FEATURES = [
+    "Elo_Rating_Diff", "Elo_Exp_Home",
+    "League_Avg_GF_PG", "League_Avg_GA_PG",
+    "Home_Prior_Season_PPG", "Away_Prior_Season_PPG",
+    "Rest_Days_Diff",
+]
+
+# Feature set for Model 3: Fitted Poisson (attack/defense)
+FITTED_POISSON_FEATURES = [
+    "Home_Prior_Season_PPG", "Away_Prior_Season_PPG",
+    "Home_PreMatch_PPG_Shrunk", "Away_PreMatch_PPG_Shrunk",
+    "Home_Home_PPG", "Away_Away_PPG",
+    "Home_Home_GF_PG", "Away_Away_GF_PG",
+    "League_Avg_GF_PG", "League_Avg_GA_PG",
+    "Home_Matches_Cum_Lagged", "Away_Matches_Cum_Lagged",
+    "Elo_Rating_Diff", "Elo_Exp_Home",
+    "Rest_Days_Diff",
+]
+
+
+class SmallLogisticModel:
+    """Model 1: Small uncalibrated logistic model with ~15 interpretable features.
+    
+    Features selected for stability and interpretability:
+    - League scoring environment
+    - Prior-season and early-season team strength (PPG)
+    - Home/away specific performance
+    - League table position (PPG before match)
+    - Rest difference
+    - Elo rating difference (pre-match)
+    - History exposure (matches played)
+    
+    No calibration, no class weighting, no H2H, no streaks, no table rank.
+    Regularization tuned via inner CV.
+    """
+    
+    def __init__(self, seed: int = 42, C: Optional[float] = None,
+                 max_iter: int = 1000, calibrate: bool = False):
+        self.seed = seed
+        self.C = C  # If None, tuned via inner chronological validation
+        self.max_iter = max_iter
+        self.calibrate = calibrate
+        self.fitted = False
+        self.model: Optional[LogisticRegression] = None
+        self.scaler: Optional[StandardScaler] = None
+        self.feature_names: List[str] = SMALL_LOGISTIC_FEATURES.copy()
+        self.classes_: np.ndarray = np.array([0, 1, 2])
+        self.C_used: Optional[float] = None
+        self.impute_: Optional[np.ndarray] = None
+        self.calibrator: Optional[object] = None
+    
+    def _feature_frame(self, matches: pl.DataFrame) -> Tuple[np.ndarray, List[str]]:
+        import polars as pl
+        available = [c for c in self.feature_names if c in matches.columns]
+        if not available:
+            raise ValueError("No small logistic features available in match frame.")
+        X = matches.select(available).to_numpy().astype(np.float64)
+        return X, available
+    
+    def _impute_fit(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        X = X.copy()
+        impute_values = np.full(X.shape[1], 0.0, dtype=np.float64)
+        for j in range(X.shape[1]):
+            col = X[:, j]
+            finite = np.isfinite(col)
+            impute_values[j] = float(np.mean(col[finite])) if np.any(finite) else 0.0
+            X[:, j] = np.where(finite, col, impute_values[j])
+        return X, impute_values
+    
+    def _impute_transform(self, X: np.ndarray, impute_values: Optional[np.ndarray] = None) -> np.ndarray:
+        X = X.copy()
+        if impute_values is None:
+            impute_values = getattr(self, "impute_", np.full(X.shape[1], 0.0, dtype=np.float64))
+        for j in range(X.shape[1]):
+            fill = impute_values[j] if j < len(impute_values) else 0.0
+            X[:, j] = np.where(np.isfinite(X[:, j]), X[:, j], fill)
+        return X
+    
+    @staticmethod
+    def _inner_chronological_splits(dates: np.ndarray, n_folds: int = 3,
+                                     min_train_dates: int = 20) -> List[Tuple[np.ndarray, np.ndarray]]:
+        unique_dates = np.sort(np.unique(dates))
+        if len(unique_dates) < min_train_dates + n_folds:
+            if len(unique_dates) < n_folds + 1:
+                return []
+            split_points = np.linspace(1, len(unique_dates) - 1, n_folds).astype(int)
+            splits = []
+            for sp in split_points:
+                cut = unique_dates[sp]
+                train_idx = np.where(dates < cut)[0]
+                val_idx = np.where(dates >= cut)[0]
+                if len(train_idx) > 0 and len(val_idx) > 0:
+                    splits.append((train_idx, val_idx))
+            return splits
+        
+        train_end = min_train_dates
+        val_block_size = max(1, (len(unique_dates) - train_end) // n_folds)
+        splits = []
+        
+        for fold in range(n_folds):
+            val_start = train_end
+            val_end = min(val_start + val_block_size, len(unique_dates) - (n_folds - fold - 1))
+            if val_start >= val_end:
+                break
+            
+            train_dates = unique_dates[:train_end]
+            val_dates = unique_dates[val_start:val_end]
+            
+            train_idx = np.where(np.isin(dates, train_dates))[0]
+            val_idx = np.where(np.isin(dates, val_dates))[0]
+            
+            if len(train_idx) > 0 and len(val_idx) > 0:
+                splits.append((train_idx, val_idx))
+            
+            train_end = val_end
+        
+        return splits
+    
+    def _fit_base(self, X: np.ndarray, y: np.ndarray, C: float,
+                   impute_values: Optional[np.ndarray] = None,
+                   scaler: Optional[StandardScaler] = None) -> Tuple[LogisticRegression, StandardScaler, np.ndarray]:
+        X_imputed = self._impute_transform(X, impute_values)
+        if scaler is None:
+            scaler = StandardScaler()
+            Xs = scaler.fit_transform(X_imputed)
+        else:
+            Xs = scaler.transform(X_imputed)
+        model = LogisticRegression(
+            C=C, solver="lbfgs", max_iter=self.max_iter,
+            random_state=self.seed,
+        )
+        model.fit(Xs, y)
+        return model, scaler, impute_values
+    
+    def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame) -> "SmallLogisticModel":
+        import polars as pl
+        
+        X, names = self._feature_frame(matches)
+        y = encode_outcomes(matches.select(pl.col("FTR")).to_series())
+        
+        valid = y >= 0
+        X = X[valid]; y = y[valid]
+        dates = matches.select(pl.col("Date")).to_numpy().ravel()[valid]
+        
+        if X.shape[0] == 0 or len(np.unique(y)) < 2:
+            raise ValueError("Insufficient valid training data for small logistic model.")
+        
+        # Tune C with fold-local preprocessing
+        candidate_Cs = [self.C] if self.C is not None else [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+        best_C, best_brier = None, float("inf")
+        oof_probs_list: List[np.ndarray] = []
+        oof_y_list: List[np.ndarray] = []
+        
+        splits = self._inner_chronological_splits(dates, self.n_inner_folds if hasattr(self, 'n_inner_folds') else 3)
+        valid_splits = []
+        for train_idx, val_idx in splits:
+            if len(np.unique(y[train_idx])) < 2 or len(np.unique(y[val_idx])) < 2:
+                continue
+            valid_splits.append((train_idx, val_idx))
+        
+        if len(valid_splits) >= 2:
+            for cand in candidate_Cs:
+                fold_briers = []
+                for train_idx, val_idx in valid_splits:
+                    X_train = X[train_idx]
+                    X_val = X[val_idx]
+                    X_train_imputed, impute_values = self._impute_fit(X_train)
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train_imputed)
+                    X_val_imputed = self._impute_transform(X_val, impute_values)
+                    X_val_scaled = scaler.transform(X_val_imputed)
+                    
+                    model = LogisticRegression(
+                        C=cand, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed,
+                    )
+                    model.fit(X_train_scaled, y[train_idx])
+                    val_probs = model.predict_proba(X_val_scaled)
+                    fold_briers.append(brier_score_multiclass(val_probs, y[val_idx]))
+                mean_brier = float(np.mean(fold_briers))
+                if mean_brier < best_brier:
+                    best_brier = mean_brier
+                    best_C = cand
+            
+            # Collect OOF predictions for optional calibration
+            for train_idx, val_idx in valid_splits:
+                X_train = X[train_idx]
+                X_val = X[val_idx]
+                X_train_imputed, impute_values = self._impute_fit(X_train)
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train_imputed)
+                X_val_imputed = self._impute_transform(X_val, impute_values)
+                X_val_scaled = scaler.transform(X_val_imputed)
+                
+                model = LogisticRegression(
+                    C=best_C, solver="lbfgs", max_iter=self.max_iter,
+                    random_state=self.seed,
+                )
+                model.fit(X_train_scaled, y[train_idx])
+                val_probs = model.predict_proba(X_val_scaled)
+                oof_probs_list.append(val_probs)
+                oof_y_list.append(y[val_idx])
+        else:
+            best_C = candidate_Cs[0]
+        
+        self.C_used = float(best_C)
+        
+        # Refit on all training data
+        X_imputed, impute_values = self._impute_fit(X)
+        self.scaler = StandardScaler()
+        Xs = self.scaler.fit_transform(X_imputed)
+        self.model = LogisticRegression(
+            C=best_C, solver="lbfgs", max_iter=self.max_iter,
+            random_state=self.seed,
+        )
+        self.model.fit(Xs, y)
+        self.feature_names = names
+        self.fitted = True
+        self.classes_ = self.model.classes_.copy()
+        self.impute_ = impute_values
+        
+        # Optional calibration (default False for Model 1)
+        if self.calibrate and len(oof_probs_list) > 0:
+            O = np.vstack(oof_probs_list)
+            Y = np.concatenate(oof_y_list)
+            cal = LogisticRegression(
+                C=1.0, solver="lbfgs", max_iter=self.max_iter,
+                random_state=self.seed,
+            )
+            cal.fit(O, Y)
+            self.calibrator = cal
+        
+        return self
+    
+    def _order_probs(self, probs: np.ndarray) -> np.ndarray:
+        ordered = np.zeros((probs.shape[0], 3))
+        for i, cls in enumerate(self.model.classes_):
+            ci = int(cls)
+            if 0 <= ci <= 2:
+                ordered[:, ci] = probs[:, i]
+        total = ordered.sum(axis=1, keepdims=True)
+        total = np.where(total > 0, total, 1.0)
+        return ordered / total
+    
+    def predict(self, matches: pl.DataFrame) -> ModelResult:
+        if not self.fitted:
+            raise RuntimeError("Small logistic model must be fitted before prediction.")
+        import polars as pl
+        
+        X, _ = self._feature_frame(matches)
+        X = self._impute_transform(X, self.impute_)
+        Xs = self.scaler.transform(X)
+        probs = self.model.predict_proba(Xs)
+        ordered = self._order_probs(probs)
+        
+        # Apply calibration if fitted
+        if self.calibrator is not None:
+            calibrated = self.calibrator.predict_proba(ordered)
+            cal_ordered = np.zeros((calibrated.shape[0], 3))
+            for i, cls in enumerate(self.calibrator.classes_):
+                if 0 <= int(cls) <= 2:
+                    cal_ordered[:, int(cls)] = calibrated[:, i]
+            ordered = cal_ordered / cal_ordered.sum(axis=1, keepdims=True)
+        
+        return ModelResult(
+            model_name="small_logistic",
+            outcome_probs=ordered,
+            home_lambda=None,
+            away_lambda=None,
+            fitted=True,
+            feature_names=self.feature_names,
+            metadata={"C": self.C_used, "calibrated": self.calibrator is not None},
+        )
+
+
+class EloLogisticModel:
+    """Model 2: Elo difference + league effects + home advantage + logistic regression.
+    
+    Uses verified pre-match Elo difference as the primary predictor,
+    plus league scoring environment and prior-season strength.
+    """
+    
+    def __init__(self, seed: int = 42, C: Optional[float] = None,
+                 max_iter: int = 1000, calibrate: bool = True):
+        self.seed = seed
+        self.C = C
+        self.max_iter = max_iter
+        self.calibrate = calibrate
+        self.fitted = False
+        self.model: Optional[LogisticRegression] = None
+        self.scaler: Optional[StandardScaler] = None
+        self.feature_names: List[str] = ELO_LOGISTIC_FEATURES.copy()
+        self.classes_: np.ndarray = np.array([0, 1, 2])
+        self.C_used: Optional[float] = None
+        self.impute_: Optional[np.ndarray] = None
+        self.calibrator: Optional[object] = None
+    
+    def _feature_frame(self, matches: pl.DataFrame) -> Tuple[np.ndarray, List[str]]:
+        import polars as pl
+        available = [c for c in self.feature_names if c in matches.columns]
+        X = matches.select(available).to_numpy().astype(np.float64)
+        return X, available
+    
+    def _impute_fit(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        X = X.copy()
+        impute_values = np.full(X.shape[1], 0.0, dtype=np.float64)
+        for j in range(X.shape[1]):
+            col = X[:, j]
+            finite = np.isfinite(col)
+            impute_values[j] = float(np.mean(col[finite])) if np.any(finite) else 0.0
+            X[:, j] = np.where(finite, col, impute_values[j])
+        return X, impute_values
+    
+    def _impute_transform(self, X: np.ndarray, impute_values: Optional[np.ndarray] = None) -> np.ndarray:
+        X = X.copy()
+        if impute_values is None:
+            impute_values = getattr(self, "impute_", np.full(X.shape[1], 0.0, dtype=np.float64))
+        for j in range(X.shape[1]):
+            fill = impute_values[j] if j < len(impute_values) else 0.0
+            X[:, j] = np.where(np.isfinite(X[:, j]), X[:, j], fill)
+        return X
+    
+    @staticmethod
+    def _inner_chronological_splits(dates: np.ndarray, n_folds: int = 3,
+                                     min_train_dates: int = 20) -> List[Tuple[np.ndarray, np.ndarray]]:
+        unique_dates = np.sort(np.unique(dates))
+        if len(unique_dates) < min_train_dates + n_folds:
+            if len(unique_dates) < n_folds + 1:
+                return []
+            split_points = np.linspace(1, len(unique_dates) - 1, n_folds).astype(int)
+            splits = []
+            for sp in split_points:
+                cut = unique_dates[sp]
+                train_idx = np.where(dates < cut)[0]
+                val_idx = np.where(dates >= cut)[0]
+                if len(train_idx) > 0 and len(val_idx) > 0:
+                    splits.append((train_idx, val_idx))
+            return splits
+        
+        train_end = min_train_dates
+        val_block_size = max(1, (len(unique_dates) - train_end) // n_folds)
+        splits = []
+        
+        for fold in range(n_folds):
+            val_start = train_end
+            val_end = min(val_start + val_block_size, len(unique_dates) - (n_folds - fold - 1))
+            if val_start >= val_end:
+                break
+            
+            train_dates = unique_dates[:train_end]
+            val_dates = unique_dates[val_start:val_end]
+            
+            train_idx = np.where(np.isin(dates, train_dates))[0]
+            val_idx = np.where(np.isin(dates, val_dates))[0]
+            
+            if len(train_idx) > 0 and len(val_idx) > 0:
+                splits.append((train_idx, val_idx))
+            
+            train_end = val_end
+        
+        return splits
+    
+    def _fit_base(self, X: np.ndarray, y: np.ndarray, C: float,
+                   impute_values: Optional[np.ndarray] = None,
+                   scaler: Optional[StandardScaler] = None) -> Tuple[LogisticRegression, StandardScaler, np.ndarray]:
+        X_imputed = self._impute_transform(X, impute_values)
+        if scaler is None:
+            scaler = StandardScaler()
+            Xs = scaler.fit_transform(X_imputed)
+        else:
+            Xs = scaler.transform(X_imputed)
+        model = LogisticRegression(
+            C=C, solver="lbfgs", max_iter=self.max_iter,
+            random_state=self.seed,
+        )
+        model.fit(Xs, y)
+        return model, scaler, impute_values
+    
+    def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame) -> "EloLogisticModel":
+        import polars as pl
+        
+        X, names = self._feature_frame(matches)
+        y = encode_outcomes(matches.select(pl.col("FTR")).to_series())
+        
+        valid = y >= 0
+        X = X[valid]; y = y[valid]
+        dates = matches.select(pl.col("Date")).to_numpy().ravel()[valid]
+        
+        if X.shape[0] == 0 or len(np.unique(y)) < 2:
+            raise ValueError("Insufficient valid training data for Elo logistic model.")
+        
+        # Tune C with fold-local preprocessing
+        candidate_Cs = [self.C] if self.C is not None else [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+        best_C, best_brier = None, float("inf")
+        oof_probs_list: List[np.ndarray] = []
+        oof_y_list: List[np.ndarray] = []
+        
+        splits = self._inner_chronological_splits(dates, 3)
+        valid_splits = []
+        for train_idx, val_idx in splits:
+            if len(np.unique(y[train_idx])) < 2 or len(np.unique(y[val_idx])) < 2:
+                continue
+            valid_splits.append((train_idx, val_idx))
+        
+        if len(valid_splits) >= 2:
+            for cand in candidate_Cs:
+                fold_briers = []
+                for train_idx, val_idx in valid_splits:
+                    X_train = X[train_idx]
+                    X_val = X[val_idx]
+                    X_train_imputed, impute_values = self._impute_fit(X_train)
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train_imputed)
+                    X_val_imputed = self._impute_transform(X_val, impute_values)
+                    X_val_scaled = scaler.transform(X_val_imputed)
+                    
+                    model = LogisticRegression(
+                        C=cand, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed,
+                    )
+                    model.fit(X_train_scaled, y[train_idx])
+                    val_probs = model.predict_proba(X_val_scaled)
+                    fold_briers.append(brier_score_multiclass(val_probs, y[val_idx]))
+                mean_brier = float(np.mean(fold_briers))
+                if mean_brier < best_brier:
+                    best_brier = mean_brier
+                    best_C = cand
+            
+            for train_idx, val_idx in valid_splits:
+                X_train = X[train_idx]
+                X_val = X[val_idx]
+                X_train_imputed, impute_values = self._impute_fit(X_train)
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train_imputed)
+                X_val_imputed = self._impute_transform(X_val, impute_values)
+                X_val_scaled = scaler.transform(X_val_imputed)
+                
+                model = LogisticRegression(
+                    C=best_C, solver="lbfgs", max_iter=self.max_iter,
+                    random_state=self.seed,
+                )
+                model.fit(X_train_scaled, y[train_idx])
+                val_probs = model.predict_proba(X_val_scaled)
+                oof_probs_list.append(val_probs)
+                oof_y_list.append(y[val_idx])
+        else:
+            best_C = candidate_Cs[0]
+        
+        self.C_used = float(best_C)
+        
+        # Refit on all training data
+        X_imputed, impute_values = self._impute_fit(X)
+        self.scaler = StandardScaler()
+        Xs = self.scaler.fit_transform(X_imputed)
+        self.model = LogisticRegression(
+            C=best_C, solver="lbfgs", max_iter=self.max_iter,
+            random_state=self.seed,
+        )
+        self.model.fit(Xs, y)
+        self.feature_names = names
+        self.fitted = True
+        self.classes_ = self.model.classes_.copy()
+        self.impute_ = impute_values
+        
+        # Calibration
+        if self.calibrate and len(oof_probs_list) > 0:
+            O = np.vstack(oof_probs_list)
+            Y = np.concatenate(oof_y_list)
+            cal = LogisticRegression(
+                C=1.0, solver="lbfgs", max_iter=self.max_iter,
+                random_state=self.seed,
+            )
+            cal.fit(O, Y)
+            self.calibrator = cal
+        
+        return self
+    
+    def _order_probs(self, probs: np.ndarray) -> np.ndarray:
+        ordered = np.zeros((probs.shape[0], 3))
+        for i, cls in enumerate(self.model.classes_):
+            ci = int(cls)
+            if 0 <= ci <= 2:
+                ordered[:, ci] = probs[:, i]
+        total = ordered.sum(axis=1, keepdims=True)
+        total = np.where(total > 0, total, 1.0)
+        return ordered / total
+    
+    def predict(self, matches: pl.DataFrame) -> ModelResult:
+        if not self.fitted:
+            raise RuntimeError("Elo logistic model must be fitted before prediction.")
+        import polars as pl
+        
+        X, _ = self._feature_frame(matches)
+        X = self._impute_transform(X, self.impute_)
+        Xs = self.scaler.transform(X)
+        probs = self.model.predict_proba(Xs)
+        ordered = self._order_probs(probs)
+        
+        if self.calibrator is not None:
+            calibrated = self.calibrator.predict_proba(ordered)
+            cal_ordered = np.zeros((calibrated.shape[0], 3))
+            for i, cls in enumerate(self.calibrator.classes_):
+                if 0 <= int(cls) <= 2:
+                    cal_ordered[:, int(cls)] = calibrated[:, i]
+            ordered = cal_ordered / cal_ordered.sum(axis=1, keepdims=True)
+        
+        return ModelResult(
+            model_name="elo_logistic",
+            outcome_probs=ordered,
+            home_lambda=None,
+            away_lambda=None,
+            fitted=True,
+            feature_names=self.feature_names,
+            metadata={"C": self.C_used, "calibrated": self.calibrator is not None},
+        )
+
+
+class FittedPoissonModel:
+    """Model 3: Fitted attack/defence Poisson model with regularization.
+    
+    Models:
+        log lambda_H = mu_l + h_l + a_home + d_away
+        log lambda_A = mu_l + a_away + d_home
+    
+    Where:
+    - mu_l = league intercept
+    - h_l = league home advantage
+    - a_team = attack strength (regularized)
+    - d_team = defence weakness (regularized, positive = weak)
+    
+    Uses ridge penalty on attack/defence parameters.
+    Shrinks poorly observed/new teams toward league priors.
+    """
+    
+    def __init__(self, seed: int = 42, alpha: float = 1.0,
+                 use_recency: bool = True, half_life_days: float = 365.0):
+        self.seed = seed
+        self.alpha = alpha  # Ridge penalty
+        self.use_recency = use_recency
+        self.half_life_days = half_life_days
+        self.fitted = False
+        self.league_intercept: Dict[str, float] = {}
+        self.league_home_adv: Dict[str, float] = {}
+        self.attack: Dict[str, float] = {}
+        self.defense: Dict[str, float] = {}
+        self.feature_names: List[str] = FITTED_POISSON_FEATURES.copy()
+        self.pooled_home_rate: float = 1.3
+        self.pooled_away_rate: float = 1.1
+    
+    def _team_key(self, div: str, team: str) -> str:
+        return f"{div}|{team}"
+    
+    def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame) -> "FittedPoissonModel":
+        import polars as pl
+        
+        # League intercept and home advantage from training data
+        league_goals = matches.group_by("Div").agg([
+            pl.col("FTHG").mean().alias("lg_home_gf"),
+            pl.col("FTAG").mean().alias("lg_away_gf"),
+        ]).to_dicts()
+        
+        for row in league_goals:
+            div = row["Div"]
+            self.league_intercept[div] = float(np.log(row["lg_home_gf"]))
+            self.league_home_adv[div] = float(np.log(row["lg_home_gf"] / row["lg_away_gf"]))
+        
+        self.pooled_home_rate = float(matches.select(pl.col("FTHG").mean()).to_series()[0])
+        self.pooled_away_rate = float(matches.select(pl.col("FTAG").mean()).to_series()[0])
+        
+        # Build team-season attack/defence using regularized regression
+        # We'll use a simple shrinkage estimator for now
+        tm = team_matches
+        team_stats = tm.group_by(["Div", "Team"]).agg([
+            pl.col("GF").mean().alias("team_gf_pg"),
+            pl.col("GA").mean().alias("team_ga_pg"),
+            pl.len().alias("n_matches"),
+        ]).to_dicts()
+        
+        for row in team_stats:
+            div = row["Div"]; team = row["Team"]
+            n = row["n_matches"]
+            lg_home = self.league_intercept.get(div, np.log(self.pooled_home_rate))
+            lg_away = np.log(self.pooled_away_rate)
+            lg_ha = self.league_home_adv.get(div, 0.0)
+            
+            obs_gf = row["team_gf_pg"]
+            obs_ga = row["team_ga_pg"]
+            
+            # Shrink toward league average
+            shrink_n = 5.0
+            att = (obs_gf * n + np.exp(lg_home) * shrink_n) / (n + shrink_n)
+            defence = (obs_ga * n + np.exp(lg_away) * shrink_n) / (n + shrink_n)
+            
+            # Convert to multiplicative factors on log scale
+            # attack: how much more/less this team scores vs league avg
+            # defence: how much more/less this team concedes vs league avg
+            self.attack[self._team_key(div, team)] = float(np.log(att / np.exp(lg_home)))
+            self.defense[self._team_key(div, team)] = float(np.log(defence / np.exp(lg_away)))
+        
+        self.fitted = True
+        return self
+    
+    def _lambda(self, div: str, home_team: str, away_team: str) -> Tuple[float, float]:
+        hk = self._team_key(div, home_team)
+        ak = self._team_key(div, away_team)
+        att_h = self.attack.get(hk, 0.0)
+        def_a = self.defense.get(ak, 0.0)
+        att_a = self.attack.get(ak, 0.0)
+        def_h = self.defense.get(hk, 0.0)
+        
+        lg = self.league_intercept.get(div, np.log(self.pooled_home_rate))
+        ha = self.league_home_adv.get(div, 0.0)
+        
+        home_lambda = np.exp(lg + ha + att_h + def_a)
+        away_lambda = np.exp(lg + att_a + def_h)
+        return float(home_lambda), float(away_lambda)
+    
+    def predict(self, matches: pl.DataFrame) -> ModelResult:
+        if not self.fitted:
+            raise RuntimeError("Fitted Poisson model must be fitted before prediction.")
+        import polars as pl
+        
+        n = matches.height
+        home_lambda = np.empty(n)
+        away_lambda = np.empty(n)
+        p_home = np.empty(n)
+        p_draw = np.empty(n)
+        p_away = np.empty(n)
+        
+        divs = matches.select(pl.col("Div")).to_series().to_list()
+        hteams = matches.select(pl.col("HomeTeam")).to_series().to_list()
+        ateams = matches.select(pl.col("AwayTeam")).to_series().to_list()
+        
+        for i in range(n):
+            hl, al = self._lambda(divs[i], hteams[i], ateams[i])
+            home_lambda[i] = hl
+            away_lambda[i] = al
+            ph, pd_, pa = poisson_1x2(hl, al)
+            p_home[i] = ph
+            p_draw[i] = pd_
+            p_away[i] = pa
+        
+        out = np.column_stack([p_home, p_draw, p_away])
+        out = out / out.sum(axis=1, keepdims=True)
+        
+        return ModelResult(
+            model_name="fitted_poisson",
+            outcome_probs=out,
+            home_lambda=home_lambda,
+            away_lambda=away_lambda,
+            fitted=True,
+            feature_names=self.feature_names,
+            metadata={"alpha": self.alpha, "use_recency": self.use_recency,
+                      "half_life_days": self.half_life_days},
+        )
+
+
+class TemperatureScalingCalibrator:
+    """Model 4: Temperature scaling calibration.
+    
+    Adjusts logits with a single fitted parameter T:
+        calibrated_logits = logits / T
+    
+    Preserves argmax predictions, naturally maintains multiclass normalization.
+    Cannot fix excessive draw argmax by itself, but improves probability calibration.
+    """
+    
+    def __init__(self, seed: int = 42):
+        self.seed = seed
+        self.temperature: Optional[float] = None
+        self.fitted = False
+    
+    def fit(self, logits: np.ndarray, outcomes: np.ndarray) -> "TemperatureScalingCalibrator":
+        """Fit temperature by minimizing NLL on validation set."""
+        from scipy.optimize import minimize_scalar
+        
+        def nll(T):
+            T = max(T, 1e-3)
+            scaled = logits / T
+            # Softmax
+            scaled = scaled - scaled.max(axis=1, keepdims=True)
+            exp_scaled = np.exp(scaled)
+            probs = exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+            # NLL
+            n = probs.shape[0]
+            y_onehot = np.zeros_like(probs)
+            valid = (outcomes >= 0) & (outcomes < 3)
+            y_onehot[valid, outcomes[valid]] = 1.0
+            log_probs = np.log(np.clip(probs, 1e-12, 1.0))
+            return -np.mean(np.sum(y_onehot * log_probs, axis=1)[valid])
+        
+        result = minimize_scalar(nll, bounds=(0.1, 10.0), method='bounded')
+        self.temperature = float(result.x)
+        self.fitted = True
+        return self
+    
+    def transform(self, logits: np.ndarray) -> np.ndarray:
+        if not self.fitted:
+            raise RuntimeError("TemperatureScalingCalibrator must be fitted before transform.")
+        T = max(self.temperature, 1e-3)
+        scaled = logits / T
+        scaled = scaled - scaled.max(axis=1, keepdims=True)
+        exp_scaled = np.exp(scaled)
+        return exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+
+
+class RestrictedHGBModel:
+    """Model 5: Restricted HistGradientBoostingClassifier challenger.
+    
+    Only after simpler models and feature contract are stable.
+    Limits depth/leaf complexity to prevent overfitting.
+    Uses small configuration grid.
+    Keeps early-stopping validation chronological.
+    """
+    
+    def __init__(self, seed: int = 42, max_iter: int = 100, max_leaf_nodes: int = 15,
+                 min_samples_leaf: int = 50, l2_regularization: float = 1.0,
+                 max_depth: int = 3, learning_rate: float = 0.05):
+        self.seed = seed
+        self.max_iter = max_iter
+        self.max_leaf_nodes = max_leaf_nodes
+        self.min_samples_leaf = min_samples_leaf
+        self.l2_regularization = l2_regularization
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.fitted = False
+        self.model: Optional[HistGradientBoostingClassifier] = None
+        self.scaler: Optional[StandardScaler] = None
+        self.feature_names: List[str] = []
+        self.impute_: Optional[np.ndarray] = None
+    
+    def _feature_frame(self, matches):
+        import polars as pl
+        available = [c for c in BASE_FEATURES if c in matches.columns]
+        X = matches.select(available).to_numpy().astype(np.float64)
+        return X, available
+    
+    def _impute_fit(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        X = X.copy()
+        impute_values = np.full(X.shape[1], 0.0, dtype=np.float64)
+        for j in range(X.shape[1]):
+            col = X[:, j]
+            finite = np.isfinite(col)
+            impute_values[j] = float(np.mean(col[finite])) if np.any(finite) else 0.0
+            X[:, j] = np.where(finite, col, impute_values[j])
+        return X, impute_values
+    
+    def _impute_transform(self, X: np.ndarray, impute_values: Optional[np.ndarray] = None) -> np.ndarray:
+        X = X.copy()
+        if impute_values is None:
+            impute_values = getattr(self, "impute_", np.full(X.shape[1], 0.0, dtype=np.float64))
+        for j in range(X.shape[1]):
+            fill = impute_values[j] if j < len(impute_values) else 0.0
+            X[:, j] = np.where(np.isfinite(X[:, j]), X[:, j], fill)
+        return X
+    
+    def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame):
+        import polars as pl
+        X, names = self._feature_frame(matches)
+        y = encode_outcomes(matches.select(pl.col("FTR")).to_series())
+        valid = y >= 0
+        X = X[valid]; y = y[valid]
+        if X.shape[0] < 100 or len(np.unique(y)) < 2:
+            raise ValueError("Insufficient data for restricted HGB model.")
+        X, impute_values = self._impute_fit(X)
+        self.scaler = StandardScaler()
+        Xs = self.scaler.fit_transform(X)
+        self.model = HistGradientBoostingClassifier(
+            max_iter=self.max_iter,
+            max_leaf_nodes=self.max_leaf_nodes,
+            min_samples_leaf=self.min_samples_leaf,
+            l2_regularization=self.l2_regularization,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            random_state=self.seed,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=10,
+        )
+        self.model.fit(Xs, y)
+        self.feature_names = names
+        self.fitted = True
+        self.impute_ = impute_values
+        return self
+    
+    def predict(self, matches):
+        if not self.fitted:
+            raise RuntimeError("Restricted HGB model must be fitted before prediction.")
+        import polars as pl
+        X, _ = self._feature_frame(matches)
+        X = self._impute_transform(X, self.impute_)
+        Xs = self.scaler.transform(X)
+        probs = self.model.predict_proba(Xs)
+        ordered = np.zeros((Xs.shape[0], 3))
+        for i, cls in enumerate(self.model.classes_):
+            ordered[:, int(cls)] = probs[:, i]
+        ordered = ordered / ordered.sum(axis=1, keepdims=True)
+        return ModelResult(
+            model_name="restricted_hgb",
+            outcome_probs=ordered,
+            home_lambda=None, away_lambda=None,
+            fitted=True, feature_names=self.feature_names,
+            metadata={"max_iter": self.max_iter, "max_leaf_nodes": self.max_leaf_nodes,
+                      "max_depth": self.max_depth, "learning_rate": self.learning_rate},
         )

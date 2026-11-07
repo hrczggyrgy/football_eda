@@ -324,6 +324,8 @@ def _add_venue_splits(df: pl.DataFrame) -> pl.DataFrame:
     Computed as cumulative (lagged) averages within each team-season split by
     venue. Previous-season venue performance is not carried here (kept simple;
     prior-season PPG is the cross-season prior).
+
+    Uses shift(1) to get strictly prior values, robust to null current-row values.
     """
     out = df.sort(["Div", "Team", "Season", "Date"])
     grp = TEAM_SEASON_GROUP + ["Venue"]
@@ -331,9 +333,10 @@ def _add_venue_splits(df: pl.DataFrame) -> pl.DataFrame:
     points = pl.col("Points")
     gf = pl.col("GF")
 
-    prior_points = (points.cum_sum().over(grp) - points).alias("prior_points")
-    prior_matches = (points.cum_count().over(grp) - 1).alias("prior_matches")
-    prior_gf = (gf.cum_sum().over(grp) - gf).alias("prior_gf")
+    # Strictly prior cumulative sums/counts using shift(1) - robust to null current row.
+    prior_points = points.cum_sum().over(grp).shift(1).over(grp).alias("prior_points")
+    prior_matches = points.cum_count().over(grp).shift(1).over(grp).alias("prior_matches")
+    prior_gf = gf.cum_sum().over(grp).shift(1).over(grp).alias("prior_gf")
 
     out = out.with_columns([prior_points, prior_matches, prior_gf])
 
@@ -742,12 +745,28 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
     Helps the model weight prior-season PPG vs current-season form:
     early in the season, prior season matters more; late in the season,
     current form matters more.
-    Strictly pre-match: uses matches played BEFORE this fixture.
+    Strictly pre-match: uses matches played BEFORE this fixture (strictly earlier dates).
     """
     out = df.sort(["Div", "Season", "Date"])
-    # Matches played before this fixture within (Div, Season)
-    matches_so_far = pl.col("Date").cum_count().over(["Div", "Season"]) - 1
-    out = out.with_columns(matches_so_far.alias("Matches_So_Far"))
+
+    # Matches played before this fixture within (Div, Season) - strictly earlier dates.
+    # Use a self-join on date to count strictly prior matches, avoiding same-date ambiguity.
+    match_counts = out.group_by(["Div", "Season", "Date"]).agg(
+        pl.len().alias("matches_on_date")
+    ).sort(["Div", "Season", "Date"]).with_columns(
+        pl.col("matches_on_date").cum_sum().over(["Div", "Season"]).alias("matches_up_to_date")
+    )
+    # Matches strictly before this date = matches_up_to_date - matches_on_date
+    match_counts = match_counts.with_columns(
+        (pl.col("matches_up_to_date") - pl.col("matches_on_date")).alias("Matches_So_Far")
+    )
+
+    out = out.join(
+        match_counts.select(["Div", "Season", "Date", "Matches_So_Far"]),
+        on=["Div", "Season", "Date"],
+        how="left",
+        maintain_order="left"
+    )
 
     # Total matches per season from prior seasons (for estimating season length).
     season_totals = out.group_by(["Div", "Season"]).agg(
