@@ -425,6 +425,28 @@ def pair_match_features(team_features: pl.DataFrame) -> pl.DataFrame:
         # Season progress (late season, both teams need points -> more draws)
         pl.when((pl.col("Home_Season_Progress") > 0.7) & (pl.col("Away_Season_Progress") > 0.7))
         .then(1).otherwise(0).alias("Late_Season_Both"),
+    ]).with_columns([
+        # Evenly matched indicator (based on match-level Elo diff)
+        pl.when(pl.col("Elo_Rating_Diff_Abs") < 50).then(1).otherwise(0).alias("Evenly_Matched"),
+        # Low scoring league indicator
+        pl.when((pl.col("Home_League_Avg_GF_PG") + pl.col("Home_League_Avg_GA_PG")) < 2.5).then(1).otherwise(0).alias("Low_Scoring_League"),
+        # Draw-prone context: evenly matched + (low scoring OR late season)
+        pl.when((pl.col("Elo_Rating_Diff_Abs") < 50) & 
+                ((pl.col("Home_League_Avg_GF_PG") + pl.col("Home_League_Avg_GA_PG") < 2.5) | 
+                 (pl.col("Home_Season_Progress") > 0.7)))
+        .then(1).otherwise(0).alias("Draw_Prone_Context"),
+        # Historical H2H draw rate (approximate from PPG)
+        pl.when((pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches")) > 0)
+        .then((pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches") - 
+               (pl.col("Home_H2H_PPG") * pl.col("Home_H2H_Matches") / 3.0 + 
+                pl.col("Away_H2H_PPG") * pl.col("Away_H2H_Matches") / 3.0)) /
+              (pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches")))
+        .otherwise(None).alias("H2H_Draw_Rate"),
+        # Both teams low scoring
+        (pl.col("Home_GF_Cum") + pl.col("Away_GF_Cum")).alias("Combined_GF_Cum"),
+        # Season progress (late season, both teams need points -> more draws)
+        pl.when((pl.col("Home_Season_Progress") > 0.7) & (pl.col("Away_Season_Progress") > 0.7))
+        .then(1).otherwise(0).alias("Late_Season_Both"),
     ])
 
     return matched.sort(["Div", "Date", "HomeTeam", "AwayTeam"])

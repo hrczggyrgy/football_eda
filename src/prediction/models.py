@@ -89,6 +89,7 @@ def _paired_feature_names() -> List[str]:
         "PPG_Gap_Abs", "Elo_Rating_Diff_Abs", "League_Total_Goals_PG",
         "Combined_GA_Cum", "Combined_Venue_GF_PG", "H2H_Draw_Rate",
         "Combined_GF_Cum", "Late_Season_Both",
+        "Evenly_Matched", "Low_Scoring_League", "Draw_Prone_Context",
     }
     team_only = [f for f in _BASE_TEAM_FEATURES
                  if f not in already_prefixed and f not in match_level]
@@ -1944,6 +1945,71 @@ class RestrictedHGBModel:
         )
 
 
+class DrawBoostedModel:
+    """
+    Wrapper that applies draw probability boosting to any base model.
+    
+    Takes a fitted base model and applies post-processing to boost draw predictions
+    when the draw probability exceeds a threshold.
+    """
+    
+    def __init__(self, base_model, draw_threshold: float = 0.2, 
+                 draw_boost: float = 0.05):
+        self.base_model = base_model
+        self.draw_threshold = draw_threshold
+        self.draw_boost = draw_boost
+        self.fitted = base_model.fitted
+        self.feature_names = base_model.feature_names
+        self.classes_ = np.array([0, 1, 2])
+        self.model_name = f"draw_boosted_{base_model.__class__.__name__}"
+    
+    def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame):
+        self.base_model.fit(team_matches, matches)
+        self.fitted = True
+        return self
+    
+    def predict(self, matches: pl.DataFrame) -> ModelResult:
+        if not self.fitted:
+            raise RuntimeError("Base model must be fitted before prediction.")
+        
+        base_result = self.base_model.predict(matches)
+        probs = base_result.outcome_probs.copy()
+        
+        p_home = probs[:, 0]
+        p_draw = probs[:, 1]
+        p_away = probs[:, 2]
+        
+        # Boost draw when probability exceeds threshold but draw isn't the max
+        mask = (p_draw > self.draw_threshold) & ((p_home > p_draw) | (p_away > p_draw))
+        
+        for i in np.where(mask)[0]:
+            if p_home[i] > p_away[i]:
+                take = min(self.draw_boost, p_home[i] - p_draw[i])
+                probs[i, 0] -= take
+                probs[i, 1] += take
+            else:
+                take = min(self.draw_boost, p_away[i] - p_draw[i])
+                probs[i, 2] -= take
+                probs[i, 1] += take
+        
+        # Renormalize
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        
+        return ModelResult(
+            model_name=f"draw_boosted_{self.base_model.__class__.__name__}",
+            outcome_probs=probs,
+            home_lambda=base_result.home_lambda,
+            away_lambda=base_result.away_lambda,
+            fitted=True,
+            feature_names=self.feature_names,
+            metadata={
+                "base_model": self.base_model.__class__.__name__,
+                "draw_threshold": self.draw_threshold,
+                "draw_boost": self.draw_boost,
+            },
+        )
+
+
 class TwoStageModel:
     """Two-stage model: Stage 1 predicts Draw vs Non-Draw, Stage 2 predicts Home vs Away.
     
@@ -2280,4 +2346,395 @@ class TwoStageModel:
             feature_names=self.feature_names,
             metadata={"C_draw": self.best_C_draw, "C_ha": self.best_C_ha,
                       "calibrated": self.calibrate},
+        )
+
+
+class DrawOptimizedModel:
+    """
+    Model optimized for draw prediction using threshold optimization.
+    
+    Approach:
+    1. Train a binary classifier for draw vs non-draw
+    2. Train a home/away classifier for non-draw matches
+    3. On validation data, find the optimal draw probability threshold
+       that maximizes draw accuracy (or F1 for draws)
+    4. Apply the threshold at prediction time to boost draw predictions
+    """
+    
+    def __init__(self, seed: int = 42, C: Optional[float] = None,
+                 max_iter: int = 1000, calibrate: bool = True,
+                 class_weight: Optional[str] = "balanced",
+                 draw_threshold: Optional[float] = None):
+        self.seed = seed
+        self.C = C
+        self.max_iter = max_iter
+        self.calibrate = calibrate
+        self.class_weight = class_weight
+        self.draw_threshold = draw_threshold  # If None, optimized on validation
+        self.fitted = False
+        self.draw_model: Optional[LogisticRegression] = None
+        self.ha_model: Optional[LogisticRegression] = None
+        self.draw_scaler: Optional[StandardScaler] = None
+        self.ha_scaler: Optional[StandardScaler] = None
+        self.feature_names: List[str] = BASE_FEATURES.copy()
+        self.classes_: np.ndarray = np.array([0, 1, 2])
+        self.C_used: Optional[float] = None
+        self.impute_: Optional[np.ndarray] = None
+        self.draw_calibrator: Optional[object] = None
+        self.ha_calibrator: Optional[object] = None
+        self.optimal_draw_threshold: Optional[float] = None
+    
+    def _feature_frame(self, matches: pl.DataFrame) -> Tuple[np.ndarray, List[str]]:
+        import polars as pl
+        available = [c for c in self.feature_names if c in matches.columns]
+        if not available:
+            raise ValueError("No features available in match frame.")
+        X = matches.select(available).to_numpy().astype(np.float64)
+        return X, available
+    
+    def _impute_fit(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        X = X.copy()
+        impute_values = np.full(X.shape[1], 0.0, dtype=np.float64)
+        for j in range(X.shape[1]):
+            col = X[:, j]
+            finite = np.isfinite(col)
+            impute_values[j] = float(np.mean(col[finite])) if np.any(finite) else 0.0
+            X[:, j] = np.where(finite, col, impute_values[j])
+        return X, impute_values
+    
+    def _impute_transform(self, X: np.ndarray, impute_values: Optional[np.ndarray] = None) -> np.ndarray:
+        X = X.copy()
+        if impute_values is None:
+            impute_values = getattr(self, "impute_", np.full(X.shape[1], 0.0, dtype=np.float64))
+        for j in range(X.shape[1]):
+            fill = impute_values[j] if j < len(impute_values) else 0.0
+            X[:, j] = np.where(np.isfinite(X[:, j]), X[:, j], fill)
+        return X
+    
+    @staticmethod
+    def _inner_chronological_splits(dates: np.ndarray, n_folds: int = 3,
+                                     min_train_dates: int = 20) -> List[Tuple[np.ndarray, np.ndarray]]:
+        unique_dates = np.sort(np.unique(dates))
+        if len(unique_dates) < min_train_dates + n_folds:
+            if len(unique_dates) < n_folds + 1:
+                return []
+            split_points = np.linspace(1, len(unique_dates) - 1, n_folds).astype(int)
+            splits = []
+            for sp in split_points:
+                cut = unique_dates[sp]
+                train_idx = np.where(dates < cut)[0]
+                val_idx = np.where(dates >= cut)[0]
+                if len(train_idx) > 0 and len(val_idx) > 0:
+                    splits.append((train_idx, val_idx))
+            return splits
+        
+        train_end = min_train_dates
+        val_block_size = max(1, (len(unique_dates) - train_end) // n_folds)
+        splits = []
+        
+        for fold in range(n_folds):
+            val_start = train_end
+            val_end = min(val_start + val_block_size, len(unique_dates) - (n_folds - fold - 1))
+            if val_start >= val_end:
+                break
+            
+            train_dates = unique_dates[:train_end]
+            val_dates = unique_dates[val_start:val_end]
+            
+            train_idx = np.where(np.isin(dates, train_dates))[0]
+            val_idx = np.where(np.isin(dates, val_dates))[0]
+            
+            if len(train_idx) > 0 and len(val_idx) > 0:
+                splits.append((train_idx, val_idx))
+            
+            train_end = val_end
+        
+        return splits
+    
+    def _find_optimal_draw_threshold(self, draw_probs: np.ndarray, 
+                                      true_draw: np.ndarray) -> float:
+        """Find optimal threshold for draw prediction using validation data."""
+        # Try thresholds from 0.1 to 0.5
+        thresholds = np.linspace(0.1, 0.5, 41)
+        best_threshold = 0.3
+        best_score = -1
+        
+        for thresh in thresholds:
+            pred_draw = (draw_probs > thresh).astype(int)
+            # F1 score for draw class
+            tp = np.sum((pred_draw == 1) & (true_draw == 1))
+            fp = np.sum((pred_draw == 1) & (true_draw == 0))
+            fn = np.sum((pred_draw == 0) & (true_draw == 1))
+            if tp + fp == 0:
+                continue
+            precision = tp / (tp + fp)
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+            if precision + recall == 0:
+                continue
+            f1 = 2 * precision * recall / (precision + recall)
+            if f1 > best_score:
+                best_score = f1
+                best_threshold = thresh
+        
+        return best_threshold
+    
+    def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame) -> "DrawOptimizedModel":
+        import polars as pl
+        
+        X, names = self._feature_frame(matches)
+        y = encode_outcomes(matches.select(pl.col("FTR")).to_series())
+        
+        valid = y >= 0
+        X = X[valid]; y = y[valid]
+        dates = matches.select(pl.col("Date")).to_numpy().ravel()[valid]
+        
+        if X.shape[0] == 0 or len(np.unique(y)) < 2:
+            raise ValueError("Insufficient valid training data for draw optimized model.")
+        
+        # Create binary targets
+        y_draw = (y == 1).astype(int)
+        y_ha = np.where(y == 0, 0, 1)
+        non_draw_mask = y != 1
+        
+        # Tune C with fold-local preprocessing
+        candidate_Cs = [self.C] if self.C is not None else [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+        
+        splits = self._inner_chronological_splits(dates, 3)
+        valid_splits = []
+        for train_idx, val_idx in splits:
+            if len(np.unique(y[train_idx])) < 2 or len(np.unique(y[val_idx])) < 2:
+                continue
+            valid_splits.append((train_idx, val_idx))
+        
+        best_C_draw = best_C_ha = candidate_Cs[0]
+        oof_draw_probs = []
+        oof_draw_y = []
+        oof_ha_probs = []
+        oof_ha_y = []
+        
+        if len(valid_splits) >= 2:
+            # Stage 1: Draw vs Non-Draw
+            best_brier = float("inf")
+            for cand in candidate_Cs:
+                fold_briers = []
+                for train_idx, val_idx in valid_splits:
+                    X_train = X[train_idx]
+                    X_val = X[val_idx]
+                    X_train_imp, impute_values = self._impute_fit(X_train)
+                    scaler = StandardScaler()
+                    X_train_s = scaler.fit_transform(X_train_imp)
+                    X_val_imp = self._impute_transform(X_val, impute_values)
+                    X_val_s = scaler.transform(X_val_imp)
+                    
+                    model = LogisticRegression(
+                        C=cand, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed, class_weight=self.class_weight,
+                    )
+                    model.fit(X_train_s, y_draw[train_idx])
+                    val_probs = model.predict_proba(X_val_s)
+                    fold_briers.append(brier_score_multiclass(val_probs, y_draw[val_idx]))
+                mean_brier = float(np.mean(fold_briers))
+                if mean_brier < best_brier:
+                    best_brier = mean_brier
+                    best_C_draw = cand
+            
+            # Stage 2: Home vs Away (non-draw only)
+            best_brier = float("inf")
+            for cand in candidate_Cs:
+                fold_briers = []
+                for train_idx, val_idx in valid_splits:
+                    train_nd = train_idx[non_draw_mask[train_idx]]
+                    val_nd = val_idx[non_draw_mask[val_idx]]
+                    if len(train_nd) < 10 or len(val_nd) < 10:
+                        continue
+                    X_train = X[train_nd]
+                    X_val = X[val_nd]
+                    X_train_imp, impute_values = self._impute_fit(X_train)
+                    scaler = StandardScaler()
+                    X_train_s = scaler.fit_transform(X_train_imp)
+                    X_val_imp = self._impute_transform(X_val, impute_values)
+                    X_val_s = scaler.transform(X_val_imp)
+                    
+                    model = LogisticRegression(
+                        C=cand, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed, class_weight=self.class_weight,
+                    )
+                    model.fit(X_train_s, y_ha[train_nd])
+                    val_probs = model.predict_proba(X_val_s)
+                    fold_briers.append(brier_score_multiclass(val_probs, y_ha[val_nd]))
+                mean_brier = float(np.mean(fold_briers))
+                if mean_brier < best_brier:
+                    best_brier = mean_brier
+                    best_C_ha = cand
+            
+            # Collect OOF predictions for calibration and threshold optimization
+            for train_idx, val_idx in valid_splits:
+                # Stage 1 OOF
+                X_train = X[train_idx]
+                X_val = X[val_idx]
+                X_train_imp, impute_values = self._impute_fit(X_train)
+                scaler = StandardScaler()
+                X_train_s = scaler.fit_transform(X_train_imp)
+                X_val_imp = self._impute_transform(X_val, impute_values)
+                X_val_s = scaler.transform(X_val_imp)
+                
+                model = LogisticRegression(
+                    C=best_C_draw, solver="lbfgs", max_iter=self.max_iter,
+                    random_state=self.seed, class_weight=self.class_weight,
+                )
+                model.fit(X_train_s, y_draw[train_idx])
+                val_probs = model.predict_proba(X_val_s)
+                oof_draw_probs.append(val_probs)
+                oof_draw_y.append(y_draw[val_idx])
+                
+                # Stage 2 OOF
+                train_nd = train_idx[non_draw_mask[train_idx]]
+                val_nd = val_idx[non_draw_mask[val_idx]]
+                if len(train_nd) >= 10 and len(val_nd) >= 10:
+                    X_train = X[train_nd]
+                    X_val = X[val_nd]
+                    X_train_imp, impute_values = self._impute_fit(X_train)
+                    scaler = StandardScaler()
+                    X_train_s = scaler.fit_transform(X_train_imp)
+                    X_val_imp = self._impute_transform(X_val, impute_values)
+                    X_val_s = scaler.transform(X_val_imp)
+                    
+                    model = LogisticRegression(
+                        C=best_C_ha, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed, class_weight=self.class_weight,
+                    )
+                    model.fit(X_train_s, y_ha[train_nd])
+                    val_probs = model.predict_proba(X_val_s)
+                    oof_ha_probs.append(val_probs)
+                    oof_ha_y.append(y_ha[val_nd])
+        else:
+            best_C_draw = best_C_ha = candidate_Cs[0]
+        
+        self.C_used = float(best_C_draw)
+        self.best_C_draw = float(best_C_draw)
+        self.best_C_ha = float(best_C_ha)
+        
+        # Refit on all data
+        X_imp, impute_values = self._impute_fit(X)
+        
+        # Stage 1: Draw vs Non-Draw
+        self.draw_scaler = StandardScaler()
+        Xs_draw = self.draw_scaler.fit_transform(X_imp)
+        self.draw_model = LogisticRegression(
+            C=best_C_draw, solver="lbfgs", max_iter=self.max_iter,
+            random_state=self.seed, class_weight=self.class_weight,
+        )
+        self.draw_model.fit(Xs_draw, y_draw)
+        
+        # Stage 2: Home vs Away (non-draw only)
+        X_nd = X[non_draw_mask]
+        y_ha_nd = y_ha[non_draw_mask]
+        X_nd_imp, _ = self._impute_fit(X_nd)
+        self.ha_scaler = StandardScaler()
+        Xs_ha = self.ha_scaler.fit_transform(X_nd_imp)
+        self.ha_model = LogisticRegression(
+            C=best_C_ha, solver="lbfgs", max_iter=self.max_iter,
+            random_state=self.seed, class_weight=self.class_weight,
+        )
+        self.ha_model.fit(Xs_ha, y_ha_nd)
+        
+        self.feature_names = names
+        self.fitted = True
+        self.classes_ = np.array([0, 1, 2])
+        self.impute_ = impute_values
+        
+        # Calibration and threshold optimization using OOF predictions
+        if self.calibrate and len(oof_draw_probs) > 0:
+            O_draw = np.vstack(oof_draw_probs)
+            Y_draw = np.concatenate(oof_draw_y)
+            
+            # Find optimal draw threshold on OOF predictions
+            self.optimal_draw_threshold = self._find_optimal_draw_threshold(
+                O_draw[:, 1], Y_draw
+            )
+            print(f"Optimal draw threshold: {self.optimal_draw_threshold:.3f}")
+            
+            # Calibration using Platt scaling on LOGITS without class_weight (to preserve calibration)
+            logits_draw = np.log(np.clip(O_draw[:, 1] / O_draw[:, 0], 1e-6, 1e6)).reshape(-1, 1)
+            cal_draw = LogisticRegression(C=1.0, solver="lbfgs", max_iter=self.max_iter,
+                                          random_state=self.seed)
+            cal_draw.fit(logits_draw, Y_draw)
+            self.draw_calibrator = cal_draw
+            
+            if len(oof_ha_probs) > 0:
+                O_ha = np.vstack(oof_ha_probs)
+                Y_ha = np.concatenate(oof_ha_y)
+                logits_ha = np.log(np.clip(O_ha[:, 1] / O_ha[:, 0], 1e-6, 1e6)).reshape(-1, 1)
+                cal_ha = LogisticRegression(C=1.0, solver="lbfgs", max_iter=self.max_iter,
+                                            random_state=self.seed)
+                cal_ha.fit(logits_ha, Y_ha)
+                self.ha_calibrator = cal_ha
+        
+        return self
+    
+    def predict(self, matches: pl.DataFrame) -> ModelResult:
+        if not self.fitted:
+            raise RuntimeError("DrawOptimizedModel must be fitted before prediction.")
+        import polars as pl
+        
+        X, _ = self._feature_frame(matches)
+        X = self._impute_transform(X, self.impute_)
+        
+        # Stage 1: Draw probability
+        Xs_draw = self.draw_scaler.transform(X)
+        draw_probs = self.draw_model.predict_proba(Xs_draw)  # [p_non_draw, p_draw]
+        p_draw = draw_probs[:, 1]
+        p_non_draw = draw_probs[:, 0]
+        
+        # Apply draw calibration if available (using logits)
+        if self.draw_calibrator is not None:
+            logits_draw = np.log(np.clip(p_draw / p_non_draw, 1e-6, 1e6)).reshape(-1, 1)
+            p_draw_cal = self.draw_calibrator.predict_proba(logits_draw)[:, 1]
+            p_non_draw_cal = 1 - p_draw_cal
+        else:
+            p_draw_cal = p_draw
+            p_non_draw_cal = p_non_draw
+        
+        # Apply threshold optimization: boost draw predictions conservatively
+        if self.optimal_draw_threshold is not None:
+            # Only boost draws that are already somewhat likely
+            boost_mask = (p_draw_cal > self.optimal_draw_threshold) & (p_draw_cal < 0.7)
+            # Small boost to draw probability
+            p_draw_cal = np.where(boost_mask, 
+                                  np.minimum(p_draw_cal * 1.15, 0.7),
+                                  p_draw_cal)
+            p_non_draw_cal = 1 - p_draw_cal
+        
+        # Stage 2: Home vs Away (conditional on non-draw)
+        Xs_ha = self.ha_scaler.transform(X)
+        ha_probs = self.ha_model.predict_proba(Xs_ha)
+        p_home_given_nd = ha_probs[:, 0]
+        p_away_given_nd = ha_probs[:, 1]
+        
+        # Apply HA calibration if available (using logits)
+        if self.ha_calibrator is not None:
+            logits_ha = np.log(np.clip(p_away_given_nd / p_home_given_nd, 1e-6, 1e6)).reshape(-1, 1)
+            ha_cal = self.ha_calibrator.predict_proba(logits_ha)
+            p_home_given_nd = ha_cal[:, 0]
+            p_away_given_nd = ha_cal[:, 1]
+        
+        # Combine: p_home = p_non_draw * p_home|non_draw, etc.
+        p_home = p_non_draw_cal * p_home_given_nd
+        p_away = p_non_draw_cal * p_away_given_nd
+        p_draw_final = p_draw_cal
+        
+        # Normalize
+        out = np.column_stack([p_home, p_draw_final, p_away])
+        out = out / out.sum(axis=1, keepdims=True)
+        
+        return ModelResult(
+            model_name="draw_optimized",
+            outcome_probs=out,
+            home_lambda=None,
+            away_lambda=None,
+            fitted=True,
+            feature_names=self.feature_names,
+            metadata={"C_draw": self.best_C_draw, "C_ha": self.best_C_ha,
+                      "calibrated": self.calibrate,
+                      "draw_threshold": self.optimal_draw_threshold},
         )

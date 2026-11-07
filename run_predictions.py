@@ -41,7 +41,7 @@ from prediction.models import (
     HistoricalBaseline, PoissonModel, MultinomialModel,
     HistGradientBoostingModel,
     SmallLogisticModel, EloLogisticModel, FittedPoissonModel,
-    RestrictedHGBModel,
+    RestrictedHGBModel, DrawOptimizedModel, DrawBoostedModel,
 )
 from prediction.validation_v2 import (
     run_chronological_validation, compare_models_validation,
@@ -175,6 +175,9 @@ def main():
     def factory_fitted_poisson():
         return FittedPoissonModel(seed=args.seed, alpha=1.0, use_recency=False)
 
+    def factory_draw_optimized():
+        return DrawOptimizedModel(seed=args.seed, C=None, calibrate=True, class_weight="balanced")
+
     factories = {
         "historical_baseline": factory_baseline,
         "poisson": factory_poisson,
@@ -182,6 +185,7 @@ def main():
         "small_logistic": factory_small_logistic,
         "elo_logistic": factory_elo_logistic,
         "fitted_poisson": factory_fitted_poisson,
+        "draw_optimized": factory_draw_optimized,
     }
     if not args.skip_hgb:
         def factory_hgb():
@@ -194,6 +198,14 @@ def main():
                                    min_samples_leaf=50, l2_regularization=1.0,
                                    max_depth=3, learning_rate=0.05)
     factories["restricted_hgb"] = factory_restricted_hgb
+    
+    # Draw-boosted restricted HGB
+    def factory_draw_boosted_hgb():
+        base = RestrictedHGBModel(seed=args.seed, max_iter=100, max_leaf_nodes=15,
+                                   min_samples_leaf=50, l2_regularization=1.0,
+                                   max_depth=3, learning_rate=0.05)
+        return DrawBoostedModel(base, draw_threshold=0.2, draw_boost=0.05)
+    factories["draw_boosted_hgb"] = factory_draw_boosted_hgb
 
     results = compare_models_validation(
         master, team_matches, factories, seasons=SEASONS, seed=args.seed
