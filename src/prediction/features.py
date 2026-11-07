@@ -512,24 +512,24 @@ def _add_form_momentum(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
-    """Head-to-head record between the two teams across ALL seasons in the same Div.
+    """Head-to-head record between the two teams across ALL divisions and seasons.
 
-    For each team-match row, looks at ALL previous encounters (same Div, strictly
-    earlier date) between the same unordered team pair and computes the focal
-    team's H2H points per game, goals per game, and draw rate.
+    For each team-match row, looks at ALL previous encounters (any division,
+    strictly earlier date) between the same unordered team pair and computes
+    the focal team's H2H points per game, goals per game, and draw rate.
     """
-    out = df.sort(["Div", "Team", "Season", "Date"])
+    out = df.sort(["Team", "Season", "Date"])
 
     # Build encounter history: one row per MATCH (not per team perspective).
     # Use home team's perspective as canonical for each match.
     matches = out.filter(pl.col("Venue") == "Home").select([
-        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Season"), pl.col("Date"),
         pl.col("Team").alias("HomeTeam"), pl.col("Opponent").alias("AwayTeam"),
         pl.col("Points").alias("home_pts"),
         pl.col("GF").alias("home_gf"), pl.col("GA").alias("home_ga"),
     ])
 
-    # Create unordered pair key.
+    # Create unordered pair key (no Div).
     matches = matches.with_columns(
         pl.when(pl.col("HomeTeam") < pl.col("AwayTeam")).then(pl.col("HomeTeam")).otherwise(pl.col("AwayTeam"))
         .alias("pair_a"),
@@ -539,7 +539,7 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
 
     # For each team-match row (focal), find ALL prior encounters of the same pair.
     focal = out.select([
-        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Season"), pl.col("Date"),
         pl.col("Team").alias("T1"), pl.col("Opponent").alias("T2"),
     ]).with_columns(
         pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T1")).otherwise(pl.col("T2"))
@@ -548,8 +548,8 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
         .alias("pair_b"),
     )
 
-    # Join focal rows with historical matches on division and pair.
-    joined = focal.join(matches, on=["Div", "pair_a", "pair_b"], how="left")
+    # Join focal rows with historical matches on pair (no Div).
+    joined = focal.join(matches, on=["pair_a", "pair_b"], how="left")
     # Keep only strictly prior matches.
     joined = joined.filter(pl.col("Date_right") < pl.col("Date"))
 
@@ -557,7 +557,7 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
         out = out.with_columns([
             pl.lit(None).cast(pl.Float64).alias("H2H_PPG"),
             pl.lit(None).cast(pl.Float64).alias("H2H_GF_PG"),
-            pl.lit(None).cast(pl.Float64).alias("H2H_GA_PG"),
+            pl.lit(None).cast(pl.Float64).alias("H2H_GA_PP"),
             pl.lit(None).cast(pl.Float64).alias("H2H_Draw_Rate"),
             pl.lit(None).cast(pl.Int64).alias("H2H_Matches"),
         ])
@@ -580,8 +580,8 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
         (pl.col("home_gf") == pl.col("home_ga")).cast(pl.Int64).alias("focal_draw_hist"),
     )
 
-    # Aggregate ALL historical encounters per focal match.
-    agg = joined.group_by(["Div", "Season", "Date", "T1", "T2"]).agg([
+    # Aggregate ALL historical encounters per focal match (no Div in groupby).
+    agg = joined.group_by(["Season", "Date", "T1", "T2"]).agg([
         pl.col("focal_pts_hist").mean().alias("H2H_PPG"),
         pl.col("focal_gf_hist").mean().alias("H2H_GF_PG"),
         pl.col("focal_ga_hist").mean().alias("H2H_GA_PG"),
@@ -589,8 +589,8 @@ def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
         pl.col("focal_pts_hist").count().alias("H2H_Matches"),
     ])
 
-    out = out.join(agg, left_on=["Div", "Season", "Date", "Team", "Opponent"],
-                   right_on=["Div", "Season", "Date", "T1", "T2"], how="left",
+    out = out.join(agg, left_on=["Season", "Date", "Team", "Opponent"],
+                   right_on=["Season", "Date", "T1", "T2"], how="left",
                    maintain_order="left")
     return out.drop(["pair_a", "pair_b", "T1", "T2"], strict=False)
 
@@ -833,21 +833,21 @@ def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
 def _add_recent_h2h_fixed(df: pl.DataFrame) -> pl.DataFrame:
     """Recent head-to-head PPG and draw rate over the last 5 encounters (strictly lagged).
 
-    Builds a fixture-level encounter history across ALL seasons, selects strictly
-    earlier encounters, then aggregates the latest 5.
+    Builds a fixture-level encounter history across ALL seasons AND divisions,
+    selects strictly earlier encounters, then aggregates the latest 5.
     """
-    out = df.sort(["Div", "Team", "Season", "Date"])
+    out = df.sort(["Team", "Season", "Date"])
 
     # Build encounter history: one row per MATCH (not per team perspective).
     # Use home team's perspective as canonical for each match.
     matches = out.filter(pl.col("Venue") == "Home").select([
-        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Season"), pl.col("Date"),
         pl.col("Team").alias("HomeTeam"), pl.col("Opponent").alias("AwayTeam"),
         pl.col("Points").alias("home_pts"),
         pl.col("GF").alias("home_gf"), pl.col("GA").alias("home_ga"),
     ])
 
-    # Create unordered pair key.
+    # Create unordered pair key (no Div).
     matches = matches.with_columns(
         pl.when(pl.col("HomeTeam") < pl.col("AwayTeam")).then(pl.col("HomeTeam")).otherwise(pl.col("AwayTeam"))
         .alias("pair_a"),
@@ -857,7 +857,7 @@ def _add_recent_h2h_fixed(df: pl.DataFrame) -> pl.DataFrame:
 
     # For each team-match row (focal), find prior encounters of the same pair.
     focal = out.select([
-        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Season"), pl.col("Date"),
         pl.col("Team").alias("T1"), pl.col("Opponent").alias("T2"),
     ]).with_columns(
         pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T1")).otherwise(pl.col("T2"))
@@ -866,8 +866,8 @@ def _add_recent_h2h_fixed(df: pl.DataFrame) -> pl.DataFrame:
         .alias("pair_b"),
     )
 
-    # Join focal rows with historical matches on division and pair.
-    joined = focal.join(matches, on=["Div", "pair_a", "pair_b"], how="left")
+    # Join focal rows with historical matches on pair (no Div).
+    joined = focal.join(matches, on=["pair_a", "pair_b"], how="left")
     # Keep only strictly prior matches.
     joined = joined.filter(pl.col("Date_right") < pl.col("Date"))
 
@@ -897,19 +897,19 @@ def _add_recent_h2h_fixed(df: pl.DataFrame) -> pl.DataFrame:
     # For each focal match, sort historical encounters by Date DESC and take top 5.
     joined = joined.with_columns(
         pl.col("Date_right").rank(method="ordinal", descending=True)
-        .over(["Div", "Season", "Date", "T1", "T2"])
+        .over(["Season", "Date", "T1", "T2"])
         .alias("h2h_recency_rank")
     )
     joined = joined.filter(pl.col("h2h_recency_rank") <= 5)
 
-    agg = joined.group_by(["Div", "Season", "Date", "T1", "T2"]).agg([
+    agg = joined.group_by(["Season", "Date", "T1", "T2"]).agg([
         pl.col("focal_pts_hist").mean().alias("H2H_Recent_PPG"),
         pl.col("focal_draw_hist").mean().alias("H2H_Recent_Draw_Rate"),
         pl.col("focal_pts_hist").count().alias("H2H_Recent_Matches"),
     ])
 
-    out = out.join(agg, left_on=["Div", "Season", "Date", "Team", "Opponent"],
-                   right_on=["Div", "Season", "Date", "T1", "T2"], how="left",
+    out = out.join(agg, left_on=["Season", "Date", "Team", "Opponent"],
+                   right_on=["Season", "Date", "T1", "T2"], how="left",
                    maintain_order="left")
     return out.drop(["pair_a", "pair_b", "T1", "T2"], strict=False)
 
@@ -927,13 +927,13 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
     current form matters more.
     Strictly pre-match: uses matches played BEFORE this fixture (strictly earlier dates).
     """
-    out = df.sort(["Div", "Season", "Date"])
+    out = df.sort(["Team", "Season", "Date"])
 
-    # Matches played before this fixture within (Div, Season, Team) - strictly earlier dates.
-    match_counts = out.group_by(["Div", "Season", "Team", "Date"]).agg(
+    # Matches played before this fixture within (Season, Team) - strictly earlier dates.
+    match_counts = out.group_by(["Season", "Team", "Date"]).agg(
         pl.len().alias("matches_on_date")
-    ).sort(["Div", "Season", "Team", "Date"]).with_columns(
-        pl.col("matches_on_date").cum_sum().over(["Div", "Season", "Team"]).alias("matches_up_to_date")
+    ).sort(["Season", "Team", "Date"]).with_columns(
+        pl.col("matches_on_date").cum_sum().over(["Season", "Team"]).alias("matches_up_to_date")
     )
     # Matches strictly before this date = matches_up_to_date - matches_on_date
     match_counts = match_counts.with_columns(
@@ -941,8 +941,8 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
     )
 
     out = out.join(
-        match_counts.select(["Div", "Season", "Team", "Date", "Matches_So_Far"]),
-        on=["Div", "Season", "Team", "Date"],
+        match_counts.select(["Season", "Team", "Date", "Matches_So_Far"]),
+        on=["Season", "Team", "Date"],
         how="left",
         maintain_order="left"
     )
@@ -950,36 +950,36 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
     # Total matches per team-season (from the full data - this is the target season's total).
     # Since we can't know the future, we use the prior season's team match count as
     # a proxy for the expected season length, or fall back to league format.
-    season_totals = out.group_by(["Div", "Season", "Team"]).agg(
+    season_totals = out.group_by(["Season", "Team"]).agg(
         pl.len().alias("Season_Matches")
-    ).sort(["Div", "Season", "Team"]).with_columns(
-        pl.col("Season_Matches").shift(1).over(["Div", "Team"]).alias("Prev_Season_Matches")
+    ).sort(["Season", "Team"]).with_columns(
+        pl.col("Season_Matches").shift(1).over(["Team"]).alias("Prev_Season_Matches")
     )
 
-    out = out.join(season_totals.select(["Div", "Season", "Team", "Prev_Season_Matches"]),
-                   on=["Div", "Season", "Team"], how="left", maintain_order="left")
+    out = out.join(season_totals.select(["Season", "Team", "Prev_Season_Matches"]),
+                   on=["Season", "Team"], how="left", maintain_order="left")
 
-    # If no prior season data for this team, estimate from division's prior season average matches per team.
-    # Compute average matches per team per division per season, then shift once.
-    div_totals = out.group_by(["Div", "Season"]).agg([
-        pl.len().alias("Div_Season_Team_Appearances"),
-        pl.col("Team").n_unique().alias("Div_Season_Teams"),
-    ]).sort(["Div", "Season"]).with_columns([
-        (pl.col("Div_Season_Team_Appearances") / pl.col("Div_Season_Teams")).alias("Div_Avg_Matches_Per_Team"),
-        pl.col("Div_Season_Team_Appearances").shift(1).over("Div").alias("Prior_Div_Team_Appearances"),
-        pl.col("Div_Season_Teams").shift(1).over("Div").alias("Prior_Div_Teams"),
+    # If no prior season data for this team, estimate from global prior season average matches per team.
+    # Compute average matches per team per season, then shift once.
+    global_totals = out.group_by(["Season"]).agg([
+        pl.len().alias("Season_Team_Appearances"),
+        pl.col("Team").n_unique().alias("Season_Teams"),
+    ]).sort(["Season"]).with_columns([
+        (pl.col("Season_Team_Appearances") / pl.col("Season_Teams")).alias("Season_Avg_Matches"),
+        pl.col("Season_Team_Appearances").shift(1).alias("Prior_Season_Team_Appearances"),
+        pl.col("Season_Teams").shift(1).alias("Prior_Season_Teams"),
     ]).with_columns(
-        (pl.col("Prior_Div_Team_Appearances") / pl.col("Prior_Div_Teams")).alias("Prior_Div_Avg_Matches")
-    ).select(["Div", "Season", "Prior_Div_Avg_Matches"])
+        (pl.col("Prior_Season_Team_Appearances") / pl.col("Prior_Season_Teams")).alias("Prior_Global_Avg_Matches")
+    ).select(["Season", "Prior_Global_Avg_Matches"])
 
-    out = out.join(div_totals, on=["Div", "Season"], how="left", maintain_order="left")
+    out = out.join(global_totals, on=["Season"], how="left", maintain_order="left")
 
-    # Fallback chain: team's prior season matches -> division's prior season avg -> 38
+    # Fallback chain: team's prior season matches -> global prior season avg -> 38
     out = out.with_columns(
         pl.when(pl.col("Prev_Season_Matches").is_not_null())
         .then(pl.col("Prev_Season_Matches"))
-        .when(pl.col("Prior_Div_Avg_Matches").is_not_null())
-        .then(pl.col("Prior_Div_Avg_Matches").round().cast(pl.Int64))
+        .when(pl.col("Prior_Global_Avg_Matches").is_not_null())
+        .then(pl.col("Prior_Global_Avg_Matches").round().cast(pl.Int64))
         .otherwise(pl.lit(38))
         .alias("Season_Total_Matches")
     )
@@ -989,7 +989,7 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
         .alias("Season_Progress")
     )
 
-    out = out.drop(["Matches_So_Far", "Prev_Season_Matches", "Prior_Div_Avg_Matches", "Season_Total_Matches"])
+    out = out.drop(["Matches_So_Far", "Prev_Season_Matches", "Prior_Global_Avg_Matches", "Season_Total_Matches"])
     return out
 
 

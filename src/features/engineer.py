@@ -408,6 +408,8 @@ def cluster_team_profiles(team_season: pl.DataFrame,
 # ---------------------------------------------------------------------------
 # Lagged team strength (pre-match cumulative PPG with shrinkage)
 # ---------------------------------------------------------------------------
+# Lagged team strength (pre-match cumulative PPG with shrinkage)
+# ---------------------------------------------------------------------------
 
 
 def add_lagged_team_strength(df: pl.DataFrame) -> pl.DataFrame:
@@ -416,9 +418,10 @@ def add_lagged_team_strength(df: pl.DataFrame) -> pl.DataFrame:
     Uses cumulative PPG up to but not including the current match.
     Early-season initialization uses PRIOR SEASON average (not current season),
     falling back to historical league average if no prior season exists.
+    Team strength is computed across ALL divisions (cross-division history).
     """
-    out = df.sort(['Div', 'Team', 'Season', 'Date'])
-    grp = TEAM_SEASON_GROUP
+    out = df.sort(['Team', 'Season', 'Date'])
+    grp = ['Team', 'Season']
 
     points = pl.col('Points')
     points_cum = points.cum_sum().over(grp)
@@ -441,7 +444,7 @@ def add_lagged_team_strength(df: pl.DataFrame) -> pl.DataFrame:
     )
     out = out.with_columns(pl.col('matches_cum_lagged').alias('Matches_Cum_Lagged'))
 
-    # Prior-season final PPG lookup (consecutive seasons only)
+    # Prior-season final PPG lookup (consecutive seasons only, across all divisions)
     season_num_expr = pl.col('Season').replace(SEASON_ORDER).cast(pl.Int64)
     team_season_final = out.group_by(grp).agg(pl.col('Points').mean().alias('Final_PPG'))
     team_season_final = team_season_final.with_columns(
@@ -456,20 +459,20 @@ def add_lagged_team_strength(df: pl.DataFrame) -> pl.DataFrame:
     )
 
     prior_ppg_lookup = team_season_final.filter(pl.col('Consecutive')).select([
-        pl.col('Div'), pl.col('Team'), pl.col('Season'),
+        pl.col('Team'), pl.col('Season'),
         pl.col('Prev_Final_PPG').alias('Prior_Season_PPG'),
     ])
 
-    out = out.join(prior_ppg_lookup, on=['Div', 'Team', 'Season'], how='left',
+    out = out.join(prior_ppg_lookup, on=['Team', 'Season'], how='left',
                    maintain_order='left')
 
-    # Historical league average per league-season (shifted to prior seasons only)
-    hist_avg = out.group_by(['Div', 'Season']).agg(pl.col('Points').mean().alias('League_Avg_PPG'))
-    hist_avg = hist_avg.sort(['Div', 'Season']).with_columns(
-        pl.col('League_Avg_PPG').shift(1).over('Div').alias('Hist_League_Avg_PPG')
-    ).select(['Div', 'Season', 'Hist_League_Avg_PPG'])
+    # Historical league average per season (shifted to prior seasons only) - GLOBAL
+    hist_avg = out.group_by(['Season']).agg(pl.col('Points').mean().alias('League_Avg_PPG'))
+    hist_avg = hist_avg.sort(['Season']).with_columns(
+        pl.col('League_Avg_PPG').shift(1).alias('Hist_League_Avg_PPG')
+    ).select(['Season', 'Hist_League_Avg_PPG'])
 
-    out = out.join(hist_avg, on=['Div', 'Season'], how='left', maintain_order='left')
+    out = out.join(hist_avg, on=['Season'], how='left', maintain_order='left')
 
     # Shrink early-season estimates toward prior-season PPG, then historical league avg
     has_prior = pl.col('Prior_Season_PPG').is_not_null()
