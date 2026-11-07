@@ -488,7 +488,7 @@ class MultinomialModel:
                  max_iter: int = 1000, calibrate: bool = True,
                  n_inner_folds: int = 2,
                  calibration_method: str = "platt",
-                 class_weight: Optional[str] = "balanced"):
+                 class_weight: Optional[str] = None):
         self.seed = seed
         self.C = C  # If None, tuned via inner chronological validation.
         self.max_iter = max_iter
@@ -2019,7 +2019,7 @@ class TwoStageModel:
     
     def __init__(self, seed: int = 42, C: Optional[float] = None,
                  max_iter: int = 1000, calibrate: bool = True,
-                 class_weight: Optional[str] = "balanced"):
+                 class_weight: Optional[str] = None):
         self.seed = seed
         self.C = C
         self.max_iter = max_iter

@@ -470,10 +470,11 @@ def compare_models_validation(
     team_matches: pl.DataFrame,
     factories: Dict[str, Callable],
     seasons: Optional[List[str]] = None,
+    min_train_seasons: int = 3,
     seed: int = 42,
 ) -> Dict[str, ValidationResult]:
     return {name: run_chronological_validation(
-        matches, team_matches, fn, seasons=seasons, seed=seed, model_id=name
+        matches, team_matches, fn, seasons=seasons, min_train_seasons=min_train_seasons, seed=seed, model_id=name
     ) for name, fn in factories.items()}
 
 

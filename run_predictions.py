@@ -79,6 +79,8 @@ def parse_args():
                    help="Skip the HistGradientBoosting challenger")
     p.add_argument("--reuse-cache", action="store_true",
                    help="Reuse cached EDA Parquet datasets if fingerprint matches")
+    p.add_argument("--min-train-seasons", type=int, default=3,
+                   help="Minimum training seasons for chronological validation")
     return p.parse_args()
 
 
@@ -164,7 +166,7 @@ def main():
         return PoissonModel(seed=args.seed, use_dixon_coles=False)
 
     def factory_multinomial():
-        return MultinomialModel(seed=args.seed, C=None, calibrate=True, class_weight="balanced")
+        return MultinomialModel(seed=args.seed, C=None, calibrate=True, class_weight=None)
 
     def factory_small_logistic():
         return SmallLogisticModel(seed=args.seed, C=None, calibrate=False)
@@ -176,7 +178,7 @@ def main():
         return FittedPoissonModel(seed=args.seed, alpha=1.0, use_recency=False)
 
     def factory_draw_optimized():
-        return DrawOptimizedModel(seed=args.seed, C=None, calibrate=True, class_weight="balanced")
+        return DrawOptimizedModel(seed=args.seed, C=None, calibrate=True, class_weight=None)
 
     factories = {
         "historical_baseline": factory_baseline,
@@ -208,7 +210,8 @@ def main():
     factories["draw_boosted_hgb"] = factory_draw_boosted_hgb
 
     results = compare_models_validation(
-        master, team_matches, factories, seasons=SEASONS, seed=args.seed
+        master, team_matches, factories, seasons=SEASONS, seed=args.seed,
+        min_train_seasons=args.min_train_seasons
     )
 
     # Collect per-fold metrics for reporting.
@@ -331,9 +334,6 @@ def main():
 
     # P6 feature importance: standardized coefficients of the selected model
     # (interpretable model -> coefficients; reported on held-out-consistent features).
-    bm = None
-    if best_name in ("multinomial_logistic", "historical_baseline", "poisson"):
-        bm = results[best_name].folds[0] if results[best_name].folds else None
     importance = []
     # Refit the best model on all training data to read coefficients.
     bmf = factories[best_name]()
@@ -343,7 +343,9 @@ def main():
         bmf.fit(team_matches, master)
     else:
         bmf.fit(team_matches, paired)
-    coefs = getattr(bmf.model, "coef_", None)
+    coefs = getattr(bmf, "model", None)
+    if coefs is not None:
+        coefs = getattr(coefs, "coef_", None)
     if coefs is not None and hasattr(bmf, "feature_names"):
         for name, c in zip(bmf.feature_names, coefs[0] if coefs.ndim > 1 else coefs):
             importance.append({"feature": name, "importance": float(abs(c))})

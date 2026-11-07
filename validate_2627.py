@@ -157,9 +157,9 @@ def main(results_csv: Optional[Path] = None):
 
         correct = (pred_outcome == actual_outcome) if actual_outcome else None
         correct_scoreline = (
-            (actual_home_goals == round(pred.home_expected_goals or -1)
-             and actual_away_goals == round(pred.away_expected_goals or -2))
-            if actual_home_goals is not None else None
+            (actual_home_goals == pred.most_probable_scoreline[0]
+             and actual_away_goals == pred.most_probable_scoreline[1])
+            if actual_home_goals is not None and actual_away_goals is not None else None
         )
 
         results.append({
