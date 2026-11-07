@@ -248,9 +248,10 @@ class PoissonModel:
     two Poisson PMFs, with the tail mass beyond MAX_GOALS allocated to "other".
     """
 
-    def __init__(self, seed: int = 42, use_dixon_coles: bool = False):
+    def __init__(self, seed: int = 42, use_dixon_coles: bool = True, calibrate: bool = True):
         self.seed = seed
         self.use_dixon_coles = use_dixon_coles
+        self.calibrate = calibrate
         self.fitted = False
         self.team_attack: Dict[str, float] = {}
         self.team_defense: Dict[str, float] = {}
@@ -262,6 +263,8 @@ class PoissonModel:
         self.feature_names = list(BASE_FEATURES)
         # Dixon-Coles rho parameter (negative = fewer low-scoring draws than independence)
         self.rho: Dict[str, float] = {}
+        # Temperature calibration
+        self.temperature: Optional[float] = None
 
     def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame) -> "PoissonModel":
         """Fit attack/defense strengths and league effects from training data.
@@ -320,7 +323,72 @@ class PoissonModel:
             self._fit_dixon_coles_rho(matches)
 
         self.fitted = True
+        
+        # Fit temperature calibration if enabled
+        if self.calibrate:
+            self._fit_temperature(matches)
+
         return self
+
+    def _fit_temperature(self, matches: pl.DataFrame) -> None:
+        """Fit temperature scaling calibration on training data."""
+        import polars as pl
+        from scipy.optimize import minimize_scalar
+        
+        divs = matches.select(pl.col("Div")).to_series().to_list()
+        hteams = matches.select(pl.col("HomeTeam")).to_series().to_list()
+        ateams = matches.select(pl.col("AwayTeam")).to_series().to_list()
+        hg = matches.select(pl.col("FTHG")).to_series().to_list()
+        ag = matches.select(pl.col("FTAG")).to_series().to_list()
+        
+        # Compute lambdas and logits for all training matches
+        logits_list = []
+        outcomes = []
+        
+        for i in range(len(divs)):
+            div, ht, at, h, a = divs[i], hteams[i], ateams[i], hg[i], ag[i]
+            hl, al = self._lambda(div, ht, at)
+            if self.use_dixon_coles:
+                rho = self.rho.get(div, 0.0)
+                hl, al = self._apply_dixon_coles(hl, al, rho)
+            
+            # Compute outcome probabilities
+            ph, pd_, pa = poisson_1x2(hl, al)
+            probs = np.array([ph, pd_, pa])
+            logits = np.log(np.clip(probs, 1e-12, 1 - 1e-12))
+            logits_list.append(logits)
+            
+            # Actual outcome
+            if h > a:
+                outcomes.append(0)
+            elif h == a:
+                outcomes.append(1)
+            else:
+                outcomes.append(2)
+        
+        if len(logits_list) > 10:
+            logits_arr = np.array(logits_list)
+            outcomes_arr = np.array(outcomes)
+            
+            # Fit temperature by minimizing NLL
+            def nll(T):
+                T = max(T, 1e-3)
+                scaled = logits_arr / T
+                scaled = scaled - scaled.max(axis=1, keepdims=True)
+                exp_scaled = np.exp(scaled)
+                probs = exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+                n = probs.shape[0]
+                y_onehot = np.zeros_like(probs)
+                valid = (outcomes_arr >= 0) & (outcomes_arr < 3)
+                y_onehot[valid, outcomes_arr[valid]] = 1.0
+                log_probs = np.log(np.clip(probs, 1e-12, 1.0))
+                return -np.mean(np.sum(y_onehot * log_probs, axis=1)[valid])
+            
+            logits_arr = np.array(logits_list)
+            outcomes_arr = np.array(outcomes)
+            
+            result = minimize_scalar(nll, bounds=(0.1, 10.0), method='bounded')
+            self.temperature = float(result.x)
 
     def _fit_dixon_coles_rho(self, matches: pl.DataFrame) -> None:
         """Estimate Dixon-Coles rho parameter per division via moment matching.
@@ -440,6 +508,15 @@ class PoissonModel:
         out = np.column_stack([p_home, p_draw, p_away])
         out = out / out.sum(axis=1, keepdims=True)
 
+        # Apply temperature calibration if fitted
+        if self.calibrate and self.temperature is not None:
+            T = max(self.temperature, 1e-3)
+            logits = np.log(np.clip(out, 1e-12, 1 - 1e-12))
+            scaled = logits / T
+            scaled = scaled - scaled.max(axis=1, keepdims=True)
+            exp_scaled = np.exp(scaled)
+            out = exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+
         return ModelResult(
             model_name="poisson",
             outcome_probs=out,
@@ -447,7 +524,7 @@ class PoissonModel:
             away_lambda=away_lambda,
             fitted=True,
             feature_names=self.feature_names,
-            metadata={"use_dixon_coles": self.use_dixon_coles},
+            metadata={"use_dixon_coles": self.use_dixon_coles, "calibrated": self.calibrate, "temperature": self.temperature},
         )
 
 
@@ -744,23 +821,26 @@ class MultinomialModel:
         if self.calibrate and len(oof_probs_list) > 0:
             O = np.vstack(oof_probs_list)
             Y = np.concatenate(oof_y_list)
-            if self.calibration_method == "isotonic":
-                # Isotonic regression: one per class (one-vs-rest calibration).
-                # Fits a monotonic mapping from raw prob -> calibrated prob.
-                cals = []
-                for k in range(3):
-                    iso = IsotonicRegression(out_of_bounds="clip")
-                    iso.fit(O[:, k], (Y == k).astype(np.float64))
-                    cals.append(iso)
-                self.calibrator = cals
-            else:
+            
+            from prediction.calibration import get_calibrator
+            cal_method = self.calibration_method  # "temperature", "isotonic", "ensemble", "platt"
+            calibrator = get_calibrator(cal_method, seed=self.seed)
+            
+            if cal_method == "platt":
                 # Platt scaling: multinomial logistic regression on raw probs.
                 cal = LogisticRegression(
                     C=1.0, solver="lbfgs", max_iter=self.max_iter,
                     random_state=self.seed,
                 )
                 cal.fit(O, Y)
-                self.calibrator = cal
+                self.calibrator = ("platt", cal)
+            elif cal_method == "temperature":
+                logits = np.log(np.clip(O, 1e-12, 1 - 1e-12))
+                self.calibrator = calibrator.fit(O, O.argmax(axis=1))  # temp calibrator needs logits and outcomes
+            else:
+                # isotonic or ensemble
+                calibrator.fit(O, np.argmax(O, axis=1))
+                self.calibrator = ("calibrator", calibrator)
 
         return self
 
@@ -802,22 +882,32 @@ class MultinomialModel:
 
         # Apply calibration fitted on out-of-fold training predictions only.
         if self.calibrator is not None:
-            if self.calibration_method == "isotonic" and isinstance(
-                self.calibrator, list
-            ):
+            cal_type = self.calibration_method
+            if cal_type == "isotonic" and isinstance(self.calibrator, list):
                 # Isotonic regression: apply per-class monotonic mapping.
                 cal_probs = np.column_stack([
                     self.calibrator[k].predict(ordered[:, k]) for k in range(3)
                 ])
                 ordered = cal_probs / cal_probs.sum(axis=1, keepdims=True)
-            else:
-                # Platt scaling: multinomial logistic regression on raw probs.
-                calibrated = self.calibrator.predict_proba(ordered)
+            elif cal_type == "temperature" and hasattr(self.calibrator, 'transform_probs'):
+                # Temperature scaling
+                ordered = self.calibrator.transform_probs(ordered)
+            elif cal_type == "ensemble" and hasattr(self.calibrator, 'transform'):
+                # Ensemble calibrator
+                ordered = self.calibrator.transform(ordered)
+            elif cal_type == "platt" and isinstance(self.calibrator, tuple) and self.calibrator[0] == "platt":
+                # Platt scaling
+                cal = self.calibrator[1]
+                calibrated = cal.predict_proba(ordered)
                 cal_ordered = np.zeros((calibrated.shape[0], 3))
-                for i, cls in enumerate(self.calibrator.classes_):
+                for i, cls in enumerate(cal.classes_):
                     if 0 <= int(cls) <= 2:
                         cal_ordered[:, int(cls)] = calibrated[:, i]
                 ordered = cal_ordered / cal_ordered.sum(axis=1, keepdims=True)
+            elif isinstance(self.calibrator, tuple) and self.calibrator[0] == "calibrator":
+                # Ensemble or isotonic from get_calibrator
+                cal = self.calibrator[1]
+                ordered = cal.transform(ordered)
 
         return ModelResult(
             model_name="multinomial_logistic",

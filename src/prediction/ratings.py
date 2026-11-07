@@ -243,6 +243,13 @@ def build_elo_features(team_matches: pl.DataFrame,
             for row in date_matches:
                 ht, at = row["HomeTeam"], row["AwayTeam"]
                 h_r, a_r = elo.rate(div, ht, at)  # pre-match; home advantage added inside
+                # Track rating changes for momentum feature
+                h_key = f"{div}|{ht}"
+                a_key = f"{div}|{at}"
+                h_prev = elo.ratings.get(h_key, config.initial_rating)
+                a_prev = elo.ratings.get(a_key, config.initial_rating)
+                h_change = h_r - h_prev
+                a_change = a_r - a_prev
                 elo_lookup_rows.append({
                     "Div": div,
                     "Season": row["Season"],
@@ -253,6 +260,8 @@ def build_elo_features(team_matches: pl.DataFrame,
                     "Elo_Away_Base": a_r,
                     "Elo_Exp_Home": elo.expected_score(h_r, a_r),
                     "Elo_Rating_Diff": h_r - a_r,
+                    "Elo_Home_Change": h_change,
+                    "Elo_Away_Change": a_change,
                 })
 
             # After recording pre-match ratings for all matches on this date,
@@ -273,6 +282,7 @@ def build_elo_features(team_matches: pl.DataFrame,
         pl.col("Elo_Home_Base").alias("Elo_Base_Rating"),
         pl.col("Elo_Away_Base").alias("Elo_Opponent_Rating"),
         pl.col("Elo_Exp_Home"), pl.col("Elo_Rating_Diff"),
+        pl.col("Elo_Home_Change").alias("Elo_Momentum"),
     ])
     # Away-perspective rows: own rating = away base, opponent = home base.
     away_elo = elo_lookup.select([
@@ -282,6 +292,7 @@ def build_elo_features(team_matches: pl.DataFrame,
         pl.col("Elo_Away_Base").alias("Elo_Base_Rating"),
         pl.col("Elo_Home_Base").alias("Elo_Opponent_Rating"),
         pl.col("Elo_Exp_Home"), pl.col("Elo_Rating_Diff"),
+        pl.col("Elo_Away_Change").alias("Elo_Momentum"),
     ])
     elo_rows = pl.concat([home_elo, away_elo], how="diagonal")
 

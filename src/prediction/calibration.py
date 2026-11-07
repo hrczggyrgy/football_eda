@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from scipy.optimize import minimize_scalar
 
 from prediction.utils import OUTCOME_LABELS, validate_outcome_distribution
 
@@ -200,3 +201,174 @@ def brier_decomposition(probs: np.ndarray, outcomes: np.ndarray,
         "resolution": round(resolution, 5),
         "uncertainty": round(uncertainty, 5),
     }
+
+
+# =============================================================================
+# Temperature Scaling Calibration
+# =============================================================================
+
+class TemperatureScalingCalibrator:
+    """Temperature scaling calibration for multiclass probabilities.
+    
+    Adjusts logits with a single fitted parameter T:
+        calibrated_logits = logits / T
+    
+    Preserves argmax predictions, naturally maintains multiclass normalization.
+    Cannot fix excessive draw argmax by itself, but improves probability calibration.
+    """
+    
+    def __init__(self, seed: int = 42):
+        self.seed = seed
+        self.temperature: Optional[float] = None
+        self.fitted = False
+    
+    def fit(self, logits: np.ndarray, outcomes: np.ndarray) -> "TemperatureScalingCalibrator":
+        """Fit temperature by minimizing NLL on validation set."""
+        
+        def nll(T):
+            T = max(T, 1e-3)
+            scaled = logits / T
+            # Softmax
+            scaled = scaled - scaled.max(axis=1, keepdims=True)
+            exp_scaled = np.exp(scaled)
+            probs = exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+            # NLL
+            n = probs.shape[0]
+            y_onehot = np.zeros_like(probs)
+            valid = (outcomes >= 0) & (outcomes < 3)
+            y_onehot[valid, outcomes[valid]] = 1.0
+            log_probs = np.log(np.clip(probs, 1e-12, 1.0))
+            return -np.mean(np.sum(y_onehot * log_probs, axis=1)[valid])
+        
+        result = minimize_scalar(nll, bounds=(0.1, 10.0), method='bounded')
+        self.temperature = float(result.x)
+        self.fitted = True
+        return self
+    
+    def transform(self, logits: np.ndarray) -> np.ndarray:
+        if not self.fitted:
+            raise RuntimeError("TemperatureScalingCalibrator must be fitted before transform.")
+        T = max(self.temperature, 1e-3)
+        scaled = logits / T
+        scaled = scaled - scaled.max(axis=1, keepdims=True)
+        exp_scaled = np.exp(scaled)
+        return exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+    
+    def transform_probs(self, probs: np.ndarray) -> np.ndarray:
+        """Transform probabilities by converting to logits, scaling, and back."""
+        logits = np.log(np.clip(probs, 1e-12, 1 - 1e-12))
+        return self.transform(logits)
+
+
+# =============================================================================
+# Isotonic Calibration (Multiclass)
+# =============================================================================
+
+class MulticlassIsotonicCalibrator:
+    """Isotonic regression calibration for multiclass probabilities.
+    
+    Fits one isotonic regressor per class (one-vs-rest).
+    More flexible than temperature scaling but can overfit on small samples.
+    """
+    
+    def __init__(self, n_bins: int = 100):
+        self.n_bins = n_bins
+        self.calibrators: List[object] = []
+        self.fitted = False
+    
+    def fit(self, probs: np.ndarray, outcomes: np.ndarray) -> "MulticlassIsotonicCalibrator":
+        from sklearn.isotonic import IsotonicRegression
+        self.calibrators = []
+        for k in range(3):
+            iso = IsotonicRegression(out_of_bounds="clip")
+            iso.fit(probs[:, k], (outcomes == k).astype(np.float64))
+            self.calibrators.append(iso)
+        self.fitted = True
+        return self
+    
+    def transform(self, probs: np.ndarray) -> np.ndarray:
+        if not self.fitted:
+            raise RuntimeError("MulticlassIsotonicCalibrator must be fitted before transform.")
+        cal_probs = np.column_stack([
+            self.calibrators[k].predict(probs[:, k]) for k in range(3)
+        ])
+        cal_probs = cal_probs / cal_probs.sum(axis=1, keepdims=True)
+        return cal_probs
+
+
+# =============================================================================
+# Ensemble Calibrator (Temperature + Isotonic)
+# =============================================================================
+
+class EnsembleCalibrator:
+    """Ensemble of temperature scaling and isotonic calibration.
+    
+    Uses temperature scaling as primary (more robust), with isotonic
+    as fallback for classes with sufficient samples.
+    """
+    
+    def __init__(self, seed: int = 42, min_samples_isotonic: int = 500):
+        self.seed = seed
+        self.min_samples_isotonic = min_samples_isotonic
+        self.temp_calibrator = TemperatureScalingCalibrator(seed)
+        self.iso_calibrator = MulticlassIsotonicCalibrator()
+        self.use_isotonic = [False, False, False]
+        self.fitted = False
+    
+    def fit(self, probs: np.ndarray, outcomes: np.ndarray) -> "EnsembleCalibrator":
+        # Always fit temperature scaling (most robust)
+        logits = np.log(np.clip(probs, 1e-12, 1 - 1e-12))
+        self.temp_calibrator.fit(logits, outcomes)
+        
+        # Fit isotonic for classes with enough samples
+        n = probs.shape[0]
+        for k in range(3):
+            class_count = int((outcomes == k).sum())
+            if class_count >= self.min_samples_isotonic:
+                self.use_isotonic[k] = True
+        
+        if any(self.use_isotonic):
+            self.iso_calibrator.fit(probs, outcomes)
+        
+        self.fitted = True
+        return self
+    
+    def transform(self, probs: np.ndarray) -> np.ndarray:
+        if not self.fitted:
+            raise RuntimeError("EnsembleCalibrator must be fitted before transform.")
+        
+        # Temperature scaling for all
+        logits = np.log(np.clip(probs, 1e-12, 1 - 1e-12))
+        temp_probs = self.temp_calibrator.transform(logits)
+        
+        # Isotonic refinement where available
+        if any(self.use_isotonic):
+            iso_probs = self.iso_calibrator.transform(probs)
+            for k in range(3):
+                if self.use_isotonic[k]:
+                    temp_probs[:, k] = iso_probs[:, k]
+            temp_probs = temp_probs / temp_probs.sum(axis=1, keepdims=True)
+        
+        return temp_probs
+
+
+# =============================================================================
+# Calibration Factory
+# =============================================================================
+
+def get_calibrator(method: str, **kwargs) -> object:
+    """Factory function for calibrators.
+    
+    Args:
+        method: One of 'temperature', 'isotonic', 'ensemble', 'none'
+    """
+    if method == 'temperature':
+        return TemperatureScalingCalibrator(**kwargs)
+    elif method == 'isotonic':
+        return MulticlassIsotonicCalibrator(**kwargs)
+    elif method == 'ensemble':
+        return EnsembleCalibrator(**kwargs)
+    elif method == 'none':
+        return None
+    else:
+        raise ValueError(f"Unknown calibration method: {method}")

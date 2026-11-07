@@ -76,7 +76,7 @@ PRE_MATCH_FEATURE_ALLOWLIST = {
     "Team_Table_Rank",
     "Team_GD_Momentum", "Team_Shots_Momentum", "Team_GA_Trend",
     # Elo
-    "Elo_Base_Rating", "Elo_Opponent_Rating", "Elo_Exp_Home", "Elo_Rating_Diff",
+    "Elo_Base_Rating", "Elo_Opponent_Rating", "Elo_Exp_Home", "Elo_Rating_Diff", "Elo_Momentum",
     # Rest & schedule
     "Rest_Days", "Match_Num",
     # Recent opponent & venue
