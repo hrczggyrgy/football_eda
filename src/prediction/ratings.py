@@ -219,10 +219,30 @@ def build_elo_features(team_matches: pl.DataFrame,
     # We'll build a lookup of pre-match Elo for each match
     elo_lookup_rows = []
 
+    # Track the START rating of each team's last match
+    # This will be used to compute momentum for their next match
+    last_match_start_rating: Dict[str, float] = {}
+
     # Process each division separately
     for div in matches.select(pl.col("Div").unique()).to_series().to_list():
         div_matches = matches.filter(pl.col("Div") == div).sort(["Date", "HomeTeam", "AwayTeam"])
         div_dates_list = div_matches.select(pl.col("Date").unique()).to_series().to_list()
+
+        # Get all matches for this division as dicts
+        div_rows = div_matches.to_dicts()
+
+        # Initialize last_match_start_rating with starting ratings for this season
+        teams_in_div = set()
+        for row in div_rows:
+            teams_in_div.add(row["HomeTeam"])
+            teams_in_div.add(row["AwayTeam"])
+        
+        for team in teams_in_div:
+            key = f"{div}|{team}"
+            if key not in last_match_start_rating:
+                if key not in elo.ratings:
+                    elo.initialize_team(div, team)
+                last_match_start_rating[key] = elo.ratings.get(key, config.initial_rating)
 
         # Get all matches for this division as dicts
         div_rows = div_matches.to_dicts()
@@ -237,27 +257,37 @@ def build_elo_features(team_matches: pl.DataFrame,
                     key = f"{div}|{t}"
                     if key not in elo.ratings:
                         elo.initialize_team(div, t)
+                    if key not in last_match_start_rating:
+                        last_match_start_rating[key] = elo.ratings.get(key, config.initial_rating)
 
             # Record pre-match ratings for all matches on this date
-            # (using the Elo state from end of previous date)
             for row in date_matches:
                 ht, at = row["HomeTeam"], row["AwayTeam"]
                 h_r, a_r = elo.rate(div, ht, at)  # pre-match; home advantage added inside
+                
                 # Track rating changes for momentum feature
+                # Use BASE ratings (without home advantage) for momentum calculation
+                # Compare current match's START rating with the team's PREVIOUS match's START rating
                 h_key = f"{div}|{ht}"
                 a_key = f"{div}|{at}"
-                h_prev = elo.ratings.get(h_key, config.initial_rating)
-                a_prev = elo.ratings.get(a_key, config.initial_rating)
-                h_change = h_r - h_prev
-                a_change = a_r - a_prev
+                h_base_curr = h_r - config.home_advantage  # current match's start base rating
+                a_base_curr = a_r  # current base rating (away already has no HA)
+                
+                # Get last match's START rating (or initial if first match)
+                h_prev_start = last_match_start_rating.get(h_key, config.initial_rating)
+                a_prev_start = last_match_start_rating.get(a_key, config.initial_rating)
+                
+                h_change = h_base_curr - h_prev_start
+                a_change = a_base_curr - a_prev_start
+                
                 elo_lookup_rows.append({
                     "Div": div,
                     "Season": row["Season"],
                     "Date": date_val,
                     "HomeTeam": ht,
                     "AwayTeam": at,
-                    "Elo_Home_Base": h_r - config.home_advantage,
-                    "Elo_Away_Base": a_r,
+                    "Elo_Home_Base": h_base_curr,
+                    "Elo_Away_Base": a_base_curr,
                     "Elo_Exp_Home": elo.expected_score(h_r, a_r),
                     "Elo_Rating_Diff": h_r - a_r,
                     "Elo_Home_Change": h_change,
@@ -269,7 +299,21 @@ def build_elo_features(team_matches: pl.DataFrame,
             for row in date_matches:
                 hg, ag = row["HomeGoals"], row["AwayGoals"]
                 if hg is not None and ag is not None:
+                    ht, at = row["HomeTeam"], row["AwayTeam"]
+                    h_key = f"{div}|{ht}"
+                    a_key = f"{div}|{at}"
+                    
+                    # Before updating, save the current match's START rating as the "last match start rating"
+                    # for the next match this team plays
+                    h_base_curr = elo.ratings.get(h_key, config.initial_rating)
+                    a_base_curr = elo.ratings.get(a_key, config.initial_rating)
+                    
                     elo.update(div, row["HomeTeam"], row["AwayTeam"], int(hg), int(ag))
+                    
+                    # After update, save the current match's START rating (before update)
+                    # as the "last match start rating" for the next match
+                    last_match_start_rating[h_key] = h_base_curr
+                    last_match_start_rating[a_key] = a_base_curr
 
     elo_lookup = pl.DataFrame(elo_lookup_rows)
 
