@@ -522,8 +522,19 @@ def test_offline_online_parity():
     p_full = pair_match_features(f_full)
     
     master_inf = _make_master(inference)
-    # Override FTR to None to simulate truly unknown future fixture
-    master_inf = master_inf.with_columns(pl.lit(None).cast(pl.Utf8).alias("FTR"))
+    # Override FTR to None ONLY for the target fixture (2223-09-01, A vs B)
+    # to simulate truly unknown future fixture while preserving historical results
+    is_target = (
+        (pl.col("Date") == date(2022, 9, 1))
+        & (pl.col("HomeTeam") == "A")
+        & (pl.col("AwayTeam") == "B")
+    )
+    master_inf = master_inf.with_columns(
+        pl.when(is_target)
+        .then(pl.lit(None).cast(pl.Utf8))
+        .otherwise(pl.col("FTR"))
+        .alias("FTR")
+    )
     tm_inf = _tm(master_inf)
     f_inf = build_pre_match_features(tm_inf)
     p_inf = pair_match_features(f_inf)
@@ -545,12 +556,6 @@ def test_offline_online_parity():
     # All team-level pre-match features should be identical
     feature_cols = [c for c in PRE_MATCH_FEATURE_ALLOWLIST if c in full_first.columns]
     for col in feature_cols:
-        # Hist_League_Avg_PPG is computed from full division-season averages including current match,
-        # so it CAN differ between offline/online. Skip this one.
-        # PreMatch_PPG_Shrunk for first match of season uses Prior_Season_PPG which may be affected
-        # by current match being in the full dataset's seasonal aggregates. Skip this one too.
-        if col in ("Hist_League_Avg_PPG", "PreMatch_PPG_Shrunk", "Prior_Season_PPG"):
-            continue
         v_full = full_first.select(col).to_series()[0]
         v_inf = inf_first.select(col).to_series()[0]
         if v_full is None and v_inf is None:
@@ -563,18 +568,7 @@ def test_offline_online_parity():
     paired_cols = [c for c in full_paired.columns if c not in (
         "Div", "Season", "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR"
     )]
-    # Skip paired features derived from team features that can differ due to current match in seasonal aggregates
-    skip_paired = {
-        "Home_Hist_League_Avg_PPG", "Away_Hist_League_Avg_PPG",
-        "Home_PreMatch_PPG_Shrunk", "Away_PreMatch_PPG_Shrunk",
-        "Home_Prior_Season_PPG", "Away_Prior_Season_PPG",
-        "Home_Opp_Recent_PPG", "Away_Opp_Recent_PPG",
-        "Home_Opp_PPG_Cum", "Away_Opp_PPG_Cum",
-        "PPG_Gap", "PPG_Gap_Abs",
-    }
     for col in paired_cols:
-        if col in skip_paired:
-            continue
         v_full = full_paired.select(col).to_series()[0]
         v_inf = inf_paired.select(col).to_series()[0]
         if v_full is None and v_inf is None:
