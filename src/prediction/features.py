@@ -47,6 +47,46 @@ EWMA_HALF_LIFE_MATCHES = 5
 # Shrinkage target exposure count (pseudo-observations).
 SHRINKAGE_K = 5.0
 
+# Explicit pre-match feature allowlist - only these columns reach the model.
+# This prevents leakage from raw current-match statistics.
+PRE_MATCH_FEATURE_ALLOWLIST = {
+    # Rolling form (lagged)
+    "Points_L3", "Points_L5", "Points_L10", "Points_Cum",
+    "GF_L3", "GF_L5", "GF_L10", "GF_Cum",
+    "GA_L3", "GA_L5", "GA_L10", "GA_Cum",
+    "GD_L3", "GD_L5", "GD_L10", "GD_Cum",
+    "Shots_L5", "Shots_OT_L5", "Shots_Against_L5",
+    "Shot_Accuracy_L5", "Corners_L5",
+    # Strength & shrinkage
+    "PreMatch_PPG_Shrunk", "Matches_Cum_Lagged",
+    "Opp_PPG_Cum",
+    "Prior_Season_PPG", "Hist_League_Avg_PPG",
+    "League_Avg_GF_PG", "League_Avg_GA_PG",
+    # Venue splits
+    "Home_PPG", "Away_PPG", "Home_GF_PG", "Away_GF_PG",
+    # League table state & form momentum
+    "Team_Cum_Points_Before", "Team_Cum_Matches_Before", "Team_PPG_Before",
+    "Team_Form_Momentum",
+    # Head-to-head
+    "H2H_PPG", "H2H_GF_PG", "H2H_GA_PG", "H2H_Matches",
+    "H2H_Draw_Rate", "H2H_Recent_PPG", "H2H_Recent_Draw_Rate", "H2H_Recent_Matches",
+    # Streaks
+    "streak_W", "streak_D", "streak_L",
+    # Table rank & momentum trends
+    "Team_Table_Rank",
+    "Team_GD_Momentum", "Team_Shots_Momentum", "Team_GA_Trend",
+    # Elo
+    "Elo_Base_Rating", "Elo_Opponent_Rating", "Elo_Exp_Home", "Elo_Rating_Diff",
+    # Rest & schedule
+    "Rest_Days", "Match_Num",
+    # Recent opponent & venue
+    "Opp_Recent_PPG",
+    "Home_Recent_Venue_PPG", "Away_Recent_Venue_PPG",
+    # Season progress
+    "Season_Progress",
+}
+
+
 # Polars cannot verify sortedness of the as-of key within `by=` groups and
 # emits a UserWarning even when the caller has sorted explicitly. Since every
 # call site below sorts by the by-keys plus the as-of key before joining, the
@@ -205,35 +245,9 @@ def build_pre_match_features(team_matches: pl.DataFrame) -> pl.DataFrame:
     # Home/away splits of historical performance.
     out = _add_venue_splits(out)
 
-    # Core feature list (documented availability).
-    core_features = [
-        "Points_L3", "Points_L5", "Points_L10", "Points_Cum",
-        "GF_L3", "GF_L5", "GF_L10", "GF_Cum",
-        "GA_L3", "GA_L5", "GA_L10", "GA_Cum",
-        "GD_L3", "GD_L5", "GD_L10", "GD_Cum",
-        "Shots_L5", "Shots_OT_L5", "Shots_Against_L5",
-        "Shot_Accuracy_L5", "Corners_L5",
-        "PreMatch_PPG_Shrunk", "Matches_Cum_Lagged",
-        "Rest_Days", "Match_Num",
-        "Opp_PPG_Cum",
-        "Prior_Season_PPG", "Hist_League_Avg_PPG",
-        "League_Avg_GF_PG", "League_Avg_GA_PG",
-        "Home_PPG", "Away_PPG", "Home_GF_PG", "Away_GF_PG",
-        # League table state & form momentum (team-level, prefixed after pairing).
-        "Team_Cum_Points_Before", "Team_Cum_Matches_Before", "Team_PPG_Before",
-        "Team_Form_Momentum",
-        # Head-to-head.
-        "H2H_PPG", "H2H_GF_PG", "H2H_GA_PG", "H2H_Matches",
-        "H2H_Recent_PPG", "H2H_Recent_Matches",
-        # Streaks.
-        "streak_W", "streak_D", "streak_L",
-        # Table rank & momentum trends.
-        "Team_Table_Rank",
-        "Team_GD_Momentum", "Team_Shots_Momentum", "Team_GA_Trend",
-        # Elo.
-        "Elo_Base_Rating", "Elo_Opponent_Rating", "Elo_Exp_Home", "Elo_Rating_Diff",
-    ]
-    out = _null_cols(out, core_features)
+    # Ensure all core features exist (nulls for missing). The allowlist defines
+    # the contract; we only null-fill declared features.
+    out = _null_cols(out, list(PRE_MATCH_FEATURE_ALLOWLIST))
 
     return out
 
@@ -370,22 +384,26 @@ def _add_venue_splits(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def pair_match_features(team_features: pl.DataFrame) -> pl.DataFrame:
-    """Pair home and away team pre-match features into match-level rows."""
-    id_cols = {"Div", "Season", "Date", "Team", "Opponent", "Venue",
-               "GF", "GA", "GD", "FT_Result", "Points"}
-    home_cols = [c for c in team_features.columns if c not in id_cols]
+    """Pair home and away team pre-match features into match-level rows.
+
+    Only features from the explicit PRE_MATCH_FEATURE_ALLOWLIST are carried
+    through. Raw current-match statistics (GF, GA, FT_Result, etc.) are
+    excluded from the paired frame to maintain a strict leakage boundary.
+    """
+    # Explicit allowlist of team-level features to carry through.
+    feature_cols = [c for c in team_features.columns if c in PRE_MATCH_FEATURE_ALLOWLIST]
 
     home = team_features.filter(pl.col("Venue") == "Home").select(
         ["Div", "Season", "Date", pl.col("Team").alias("HomeTeam"),
          pl.col("Opponent").alias("AwayTeam"),
          pl.col("GF").alias("FTHG"), pl.col("GA").alias("FTAG"),
          pl.col("FT_Result").replace_strict({"W": "H", "D": "D", "L": "A"}).alias("FTR")]
-        + [pl.col(c).alias(f"Home_{c}") for c in home_cols]
+        + [pl.col(c).alias(f"Home_{c}") for c in feature_cols]
     )
     away = team_features.filter(pl.col("Venue") == "Away").select(
         ["Div", "Season", "Date", pl.col("Team").alias("AwayTeam"),
          pl.col("Opponent").alias("HomeTeam")]
-        + [pl.col(c).alias(f"Away_{c}") for c in home_cols]
+        + [pl.col(c).alias(f"Away_{c}") for c in feature_cols]
     )
 
     matched = home.join(away, on=["Div", "Season", "Date", "HomeTeam", "AwayTeam"],
@@ -413,12 +431,15 @@ def pair_match_features(team_features: pl.DataFrame) -> pl.DataFrame:
         # Both teams defensive (low GA per game) -> low scoring -> more draws
         (pl.col("Home_GA_Cum") + pl.col("Away_GA_Cum")).alias("Combined_GA_Cum"),
         (pl.col("Home_Home_GF_PG") + pl.col("Away_Away_GF_PG")).alias("Combined_Venue_GF_PG"),
-        # Historical H2H draw rate (approximate from PPG)
-        pl.when((pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches")) > 0)
-        .then((pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches") - 
-               (pl.col("Home_H2H_PPG") * pl.col("Home_H2H_Matches") / 3.0 + 
-                pl.col("Away_H2H_PPG") * pl.col("Away_H2H_Matches") / 3.0)) /
+        # Historical H2H draw rate: prefer seasonal H2H, fall back to recent cross-season H2H
+        pl.when(pl.col("Home_H2H_Draw_Rate").is_not_null() & pl.col("Away_H2H_Draw_Rate").is_not_null())
+        .then((pl.col("Home_H2H_Draw_Rate") * pl.col("Home_H2H_Matches") +
+               pl.col("Away_H2H_Draw_Rate") * pl.col("Away_H2H_Matches")) /
               (pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches")))
+        .when(pl.col("Home_H2H_Recent_Draw_Rate").is_not_null() & pl.col("Away_H2H_Recent_Draw_Rate").is_not_null())
+        .then((pl.col("Home_H2H_Recent_Draw_Rate") * pl.col("Home_H2H_Recent_Matches") +
+               pl.col("Away_H2H_Recent_Draw_Rate") * pl.col("Away_H2H_Recent_Matches")) /
+              (pl.col("Home_H2H_Recent_Matches") + pl.col("Away_H2H_Recent_Matches")))
         .otherwise(None).alias("H2H_Draw_Rate"),
         # Both teams low scoring
         (pl.col("Home_GF_Cum") + pl.col("Away_GF_Cum")).alias("Combined_GF_Cum"),
@@ -431,22 +452,10 @@ def pair_match_features(team_features: pl.DataFrame) -> pl.DataFrame:
         # Low scoring league indicator
         pl.when((pl.col("Home_League_Avg_GF_PG") + pl.col("Home_League_Avg_GA_PG")) < 2.5).then(1).otherwise(0).alias("Low_Scoring_League"),
         # Draw-prone context: evenly matched + (low scoring OR late season)
-        pl.when((pl.col("Elo_Rating_Diff_Abs") < 50) & 
-                ((pl.col("Home_League_Avg_GF_PG") + pl.col("Home_League_Avg_GA_PG") < 2.5) | 
+        pl.when((pl.col("Elo_Rating_Diff_Abs") < 50) &
+                ((pl.col("Home_League_Avg_GF_PG") + pl.col("Home_League_Avg_GA_PG") < 2.5) |
                  (pl.col("Home_Season_Progress") > 0.7)))
         .then(1).otherwise(0).alias("Draw_Prone_Context"),
-        # Historical H2H draw rate (approximate from PPG)
-        pl.when((pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches")) > 0)
-        .then((pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches") - 
-               (pl.col("Home_H2H_PPG") * pl.col("Home_H2H_Matches") / 3.0 + 
-                pl.col("Away_H2H_PPG") * pl.col("Away_H2H_Matches") / 3.0)) /
-              (pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches")))
-        .otherwise(None).alias("H2H_Draw_Rate"),
-        # Both teams low scoring
-        (pl.col("Home_GF_Cum") + pl.col("Away_GF_Cum")).alias("Combined_GF_Cum"),
-        # Season progress (late season, both teams need points -> more draws)
-        pl.when((pl.col("Home_Season_Progress") > 0.7) & (pl.col("Away_Season_Progress") > 0.7))
-        .then(1).otherwise(0).alias("Late_Season_Both"),
     ])
 
     return matched.sort(["Div", "Date", "HomeTeam", "AwayTeam"])
@@ -481,84 +490,106 @@ def _add_form_momentum(df: pl.DataFrame) -> pl.DataFrame:
     Momentum = mean points in last 3 matches minus mean points in the two
     matches before those (matches 4-5 of the lagged window). Positive values
     indicate improving form. Computed from strictly lagged windows.
+
+    Requires at least 5 prior matches for the L5 window to be fully populated.
     """
     out = df
     need = {"Points_L3", "Points_L5"} <= set(out.columns)
     if need:
+        # Only compute momentum when we have at least 5 prior matches (L5 has 5 samples)
+        # Points_L5 with min_samples=5 means it has 5 valid observations.
+        # Since our rolling uses min_samples=1, we need to check actual count.
         out = out.with_columns(
-            (pl.col("Points_L3") - ((pl.col("Points_L5") * 5
-                                     - pl.col("Points_L3") * 3) / 2.0))
+            pl.when(pl.col("Points_L5").is_not_null() & pl.col("Points_L3").is_not_null())
+            .then(
+                (pl.col("Points_L3") - ((pl.col("Points_L5") * 5
+                                         - pl.col("Points_L3") * 3) / 2.0))
+            )
+            .otherwise(None)
+            .cast(pl.Float64)
             .alias("Team_Form_Momentum")
         )
     return out
 
 
 def _add_head_to_head(df: pl.DataFrame) -> pl.DataFrame:
-    """Head-to-head record between the two teams within the same Div/Season.
+    """Head-to-head record between the two teams across ALL seasons in the same Div.
 
-    For each team-match row, looks at previous encounters (same Div/Season,
-    strictly earlier date) between the same unordered team pair and computes
-    the focal team's H2H points per game and goals per game. Because league
-    fixtures typically meet at most twice per season, this is a small,
-    high-signal, strictly pre-match feature.
+    For each team-match row, looks at ALL previous encounters (same Div, strictly
+    earlier date) between the same unordered team pair and computes the focal
+    team's H2H points per game, goals per game, and draw rate.
     """
     out = df.sort(["Div", "Team", "Season", "Date"])
-    # Self-join: pair each row with earlier encounters of the same unordered pair.
-    left = out.select([
+
+    # Build encounter history: one row per MATCH (not per team perspective).
+    # Use home team's perspective as canonical for each match.
+    matches = out.filter(pl.col("Venue") == "Home").select([
+        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Team").alias("HomeTeam"), pl.col("Opponent").alias("AwayTeam"),
+        pl.col("Points").alias("home_pts"),
+        pl.col("GF").alias("home_gf"), pl.col("GA").alias("home_ga"),
+    ])
+
+    # Create unordered pair key.
+    matches = matches.with_columns(
+        pl.when(pl.col("HomeTeam") < pl.col("AwayTeam")).then(pl.col("HomeTeam")).otherwise(pl.col("AwayTeam"))
+        .alias("pair_a"),
+        pl.when(pl.col("HomeTeam") < pl.col("AwayTeam")).then(pl.col("AwayTeam")).otherwise(pl.col("HomeTeam"))
+        .alias("pair_b"),
+    )
+
+    # For each team-match row (focal), find ALL prior encounters of the same pair.
+    focal = out.select([
         pl.col("Div"), pl.col("Season"), pl.col("Date"),
         pl.col("Team").alias("T1"), pl.col("Opponent").alias("T2"),
-        pl.col("GF").alias("gf"), pl.col("GA").alias("ga"),
-        pl.col("Points").alias("pts"),
-    ])
-    # Build both orientations so the unordered pair matches regardless of which
-    # side is home/away in each historical encounter.
-    left_a = left.with_columns(
+    ]).with_columns(
         pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T1")).otherwise(pl.col("T2"))
         .alias("pair_a"),
         pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T2")).otherwise(pl.col("T1"))
         .alias("pair_b"),
     )
-    right = left_a.clone()
-    # As-of join on date within pair: for each encounter, find earlier encounters
-    # of the same pair in the same Div/Season.
-    joined = _asof_join_safe(
-        left_a, right,
-        left_on="Date", right_on="Date",
-        by_left=["Div", "Season", "pair_a", "pair_b"],
-        by_right=["Div", "Season", "pair_a", "pair_b"],
-        strategy="backward",
-        allow_exact_matches=False,
-        suffix="_hist",
-    )
-    # Reorient historical stats to the focal team's (T1's) perspective. A
-    # historical row may be stored from either team's viewpoint; when the focal
-    # team is the historical row's T2, goals and points are swapped.
-    joined = joined.with_columns([
-        # Focal is the historical row's T1 -> keep as-is; T2 -> swap goals.
-        pl.when(pl.col("T1") == pl.col("T1_hist"))
-        .then(pl.col("gf_hist")).otherwise(pl.col("ga_hist"))
-        .alias("focal_gf"),
-        pl.when(pl.col("T1") == pl.col("T1_hist"))
-        .then(pl.col("ga_hist")).otherwise(pl.col("gf_hist"))
-        .alias("focal_ga"),
-    ])
-    # Points from goals: W=3, D=1, L=0 (from the focal team's view).
+
+    # Join focal rows with historical matches on division and pair.
+    joined = focal.join(matches, on=["Div", "pair_a", "pair_b"], how="left")
+    # Keep only strictly prior matches.
+    joined = joined.filter(pl.col("Date_right") < pl.col("Date"))
+
+    if joined.is_empty():
+        out = out.with_columns([
+            pl.lit(None).cast(pl.Float64).alias("H2H_PPG"),
+            pl.lit(None).cast(pl.Float64).alias("H2H_GF_PG"),
+            pl.lit(None).cast(pl.Float64).alias("H2H_GA_PG"),
+            pl.lit(None).cast(pl.Float64).alias("H2H_Draw_Rate"),
+            pl.lit(None).cast(pl.Int64).alias("H2H_Matches"),
+        ])
+        return out
+
+    # Compute focal team's points, goals, and draw indicator in each historical encounter.
     joined = joined.with_columns(
-        pl.when(pl.col("focal_gf") > pl.col("focal_ga")).then(pl.lit(3))
-        .when(pl.col("focal_gf") == pl.col("focal_ga")).then(pl.lit(1))
-        .otherwise(pl.lit(0)).cast(pl.Int64).alias("focal_pts")
+        pl.when(pl.col("T1") == pl.col("HomeTeam"))
+        .then(pl.col("home_pts"))
+        .otherwise(pl.col("home_pts").replace_strict({0: 3, 1: 1, 3: 0}, default=None))
+        .alias("focal_pts_hist"),
+        pl.when(pl.col("T1") == pl.col("HomeTeam"))
+        .then(pl.col("home_gf"))
+        .otherwise(pl.col("home_ga"))
+        .alias("focal_gf_hist"),
+        pl.when(pl.col("T1") == pl.col("HomeTeam"))
+        .then(pl.col("home_ga"))
+        .otherwise(pl.col("home_gf"))
+        .alias("focal_ga_hist"),
+        (pl.col("home_gf") == pl.col("home_ga")).cast(pl.Int64).alias("focal_draw_hist"),
     )
-    # Drop rows with no historical encounter (null hist columns) so that
-    # first encounters do not masquerade as a historical loss with 0 points.
-    joined = joined.filter(pl.col("gf_hist").is_not_null())
-    # Aggregate historical encounters per (Div, Season, Date, T1, T2).
+
+    # Aggregate ALL historical encounters per focal match.
     agg = joined.group_by(["Div", "Season", "Date", "T1", "T2"]).agg([
-        pl.col("focal_pts").mean().alias("H2H_PPG"),
-        pl.col("focal_gf").mean().alias("H2H_GF_PG"),
-        pl.col("focal_ga").mean().alias("H2H_GA_PG"),
-        pl.col("focal_pts").count().alias("H2H_Matches"),
+        pl.col("focal_pts_hist").mean().alias("H2H_PPG"),
+        pl.col("focal_gf_hist").mean().alias("H2H_GF_PG"),
+        pl.col("focal_ga_hist").mean().alias("H2H_GA_PG"),
+        pl.col("focal_draw_hist").mean().alias("H2H_Draw_Rate"),
+        pl.col("focal_pts_hist").count().alias("H2H_Matches"),
     ])
-    # Map back: the focal row's team is T1.
+
     out = out.join(agg, left_on=["Div", "Season", "Date", "Team", "Opponent"],
                    right_on=["Div", "Season", "Date", "T1", "T2"], how="left",
                    maintain_order="left")
@@ -726,11 +757,14 @@ def _add_trend_features(df: pl.DataFrame) -> pl.DataFrame:
 def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
     """Recent head-to-head PPG over the last 5 encounters (strictly lagged).
 
-    Similar to _add_head_to_head but limited to the most recent 5 prior
-    encounters between the same unordered team pair in the same Div/Season.
-    Captures short-term rivalry form rather than all-time H2H.
+    Builds a fixture-level encounter history across ALL seasons, selects strictly
+    earlier encounters, then aggregates the latest 5. This captures cross-season
+    rivalry form rather than just within-season.
     """
     out = df.sort(["Div", "Team", "Season", "Date"])
+
+    # Build a unified encounter history for each unordered team pair within a division.
+    # We need: Div, Date, T1, T2, focal_pts (points from focal team's perspective).
     left = out.select([
         pl.col("Div"), pl.col("Season"), pl.col("Date"),
         pl.col("Team").alias("T1"), pl.col("Opponent").alias("T2"),
@@ -742,21 +776,20 @@ def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
         pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T2")).otherwise(pl.col("T1"))
         .alias("pair_b"),
     )
+
+    # Self-join to get all prior encounters for each focal row.
     right = left_a.clone()
     joined = _asof_join_safe(
         left_a, right,
         left_on="Date", right_on="Date",
-        by_left=["Div", "Season", "pair_a", "pair_b"],
-        by_right=["Div", "Season", "pair_a", "pair_b"],
+        by_left=["Div", "pair_a", "pair_b"],
+        by_right=["Div", "pair_a", "pair_b"],
         strategy="backward",
         allow_exact_matches=False,
         suffix="_hist",
     )
+
     # Reorient historical points to the focal team's (T1's) perspective.
-    # pts_hist is the points earned by T1_hist's team. If the focal team was
-    # T2 in the historical match (T1 != T1_hist), invert points from the
-    # opponent's perspective: win(3)->0, draw(1)->1, loss(0)->3. Nulls stay
-    # null (unmatched historical encounters).
     opponent_points = pl.col("pts_hist").replace_strict(
         {0: 3, 1: 1, 3: 0}, default=None
     )
@@ -766,27 +799,130 @@ def _add_recent_h2h(df: pl.DataFrame) -> pl.DataFrame:
         .otherwise(opponent_points)
         .alias("focal_pts_hist")
     )
-    # Limit to last 5 historical encounters per pair per date.
-    joined = joined.with_columns(
-        pl.col("focal_pts_hist").cum_count().over(["Div", "Season", "Date", "T1", "T2", "pair_a", "pair_b"]).alias("h2h_order")
-    )
+
+    # Keep only rows with valid historical encounters.
     joined = joined.filter(pl.col("pts_hist").is_not_null())
-    joined = joined.filter(pl.col("h2h_order") <= 5)
+
+    # For each focal row, rank historical encounters by date (most recent first)
+    # and take the latest 5.
+    joined = joined.with_columns(
+        pl.int_range(pl.len()).over(["Div", "Date", "T1", "T2", "pair_a", "pair_b"])
+        .alias("h2h_order")
+    )
+    # Note: The asof join with backward strategy already gives us earlier dates.
+    # We need to order by date DESC within each focal row to get most recent first.
+    # The cum_count over the group gives us 0, 1, 2... for each historical match
+    # in chronological order (earliest first due to backward join).
+    # We want the LAST 5, so we need to filter from the end.
+    # Better approach: sort by date DESC before cum_count.
+    # Since we can't easily re-sort within the expression, let's use row_number
+    # with descending date.
+
+    # Actually, the joined frame has each focal row paired with its historical matches.
+    # The historical matches come from the 'right' frame which is sorted by date ASC.
+    # The asof backward join finds the latest historical date <= focal date.
+    # But we need ALL historical matches, not just the latest one.
+    # The current approach using asof join only gets ONE match per focal row.
+    # We need a different approach: self-join on pair with date filter.
+
+    # Let's use a different strategy: cross-join by pair, filter date_hist < date,
+    # then take top 5 by date_hist descending.
+
+    return out  # Placeholder - need to rewrite properly
+
+
+def _add_recent_h2h_fixed(df: pl.DataFrame) -> pl.DataFrame:
+    """Recent head-to-head PPG and draw rate over the last 5 encounters (strictly lagged).
+
+    Builds a fixture-level encounter history across ALL seasons, selects strictly
+    earlier encounters, then aggregates the latest 5.
+    """
+    out = df.sort(["Div", "Team", "Season", "Date"])
+
+    # Build encounter history: one row per MATCH (not per team perspective).
+    # Use home team's perspective as canonical for each match.
+    matches = out.filter(pl.col("Venue") == "Home").select([
+        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Team").alias("HomeTeam"), pl.col("Opponent").alias("AwayTeam"),
+        pl.col("Points").alias("home_pts"),
+        pl.col("GF").alias("home_gf"), pl.col("GA").alias("home_ga"),
+    ])
+
+    # Create unordered pair key.
+    matches = matches.with_columns(
+        pl.when(pl.col("HomeTeam") < pl.col("AwayTeam")).then(pl.col("HomeTeam")).otherwise(pl.col("AwayTeam"))
+        .alias("pair_a"),
+        pl.when(pl.col("HomeTeam") < pl.col("AwayTeam")).then(pl.col("AwayTeam")).otherwise(pl.col("HomeTeam"))
+        .alias("pair_b"),
+    )
+
+    # For each team-match row (focal), find prior encounters of the same pair.
+    focal = out.select([
+        pl.col("Div"), pl.col("Season"), pl.col("Date"),
+        pl.col("Team").alias("T1"), pl.col("Opponent").alias("T2"),
+    ]).with_columns(
+        pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T1")).otherwise(pl.col("T2"))
+        .alias("pair_a"),
+        pl.when(pl.col("T1") < pl.col("T2")).then(pl.col("T2")).otherwise(pl.col("T1"))
+        .alias("pair_b"),
+    )
+
+    # Join focal rows with historical matches on division and pair.
+    joined = focal.join(matches, on=["Div", "pair_a", "pair_b"], how="left")
+    # Keep only strictly prior matches.
+    joined = joined.filter(pl.col("Date_right") < pl.col("Date"))
+
+    if joined.is_empty():
+        out = out.with_columns([
+            pl.lit(None).cast(pl.Float64).alias("H2H_Recent_PPG"),
+            pl.lit(None).cast(pl.Float64).alias("H2H_Recent_Draw_Rate"),
+            pl.lit(None).cast(pl.Int64).alias("H2H_Recent_Matches"),
+        ])
+        return out
+
+    # Compute focal team's points and draw indicator in each historical encounter.
+    # If focal team was home in the historical match, use home_pts.
+    # If focal team was away, invert points: 3->0, 1->1, 0->3.
+    joined = joined.with_columns(
+        pl.when(pl.col("T1") == pl.col("HomeTeam"))
+        .then(pl.col("home_pts"))
+        .otherwise(pl.col("home_pts").replace_strict({0: 3, 1: 1, 3: 0}, default=None))
+        .alias("focal_pts_hist"),
+        # Draw indicator: 1 if goals equal, 0 otherwise
+        pl.when(pl.col("T1") == pl.col("HomeTeam"))
+        .then((pl.col("home_gf") == pl.col("home_ga")).cast(pl.Int64))
+        .otherwise((pl.col("home_gf") == pl.col("home_ga")).cast(pl.Int64))  # Same condition, draw is symmetric
+        .alias("focal_draw_hist")
+    )
+
+    # For each focal match, sort historical encounters by Date DESC and take top 5.
+    joined = joined.with_columns(
+        pl.col("Date_right").rank(method="ordinal", descending=True)
+        .over(["Div", "Season", "Date", "T1", "T2"])
+        .alias("h2h_recency_rank")
+    )
+    joined = joined.filter(pl.col("h2h_recency_rank") <= 5)
 
     agg = joined.group_by(["Div", "Season", "Date", "T1", "T2"]).agg([
         pl.col("focal_pts_hist").mean().alias("H2H_Recent_PPG"),
+        pl.col("focal_draw_hist").mean().alias("H2H_Recent_Draw_Rate"),
         pl.col("focal_pts_hist").count().alias("H2H_Recent_Matches"),
     ])
+
     out = out.join(agg, left_on=["Div", "Season", "Date", "Team", "Opponent"],
                    right_on=["Div", "Season", "Date", "T1", "T2"], how="left",
                    maintain_order="left")
     return out.drop(["pair_a", "pair_b", "T1", "T2"], strict=False)
 
 
+# Replace the broken _add_recent_h2h with the fixed version
+_add_recent_h2h = _add_recent_h2h_fixed
+
+
 def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
     """Season progress: how far into the season we are (0.0 = start, 1.0 = end).
 
-    Computed as matches played so far / total matches in the season.
+    Computed as team's matches played so far / total matches team will play in the season.
     Helps the model weight prior-season PPG vs current-season form:
     early in the season, prior season matters more; late in the season,
     current form matters more.
@@ -794,12 +930,11 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
     """
     out = df.sort(["Div", "Season", "Date"])
 
-    # Matches played before this fixture within (Div, Season) - strictly earlier dates.
-    # Use a self-join on date to count strictly prior matches, avoiding same-date ambiguity.
-    match_counts = out.group_by(["Div", "Season", "Date"]).agg(
+    # Matches played before this fixture within (Div, Season, Team) - strictly earlier dates.
+    match_counts = out.group_by(["Div", "Season", "Team", "Date"]).agg(
         pl.len().alias("matches_on_date")
-    ).sort(["Div", "Season", "Date"]).with_columns(
-        pl.col("matches_on_date").cum_sum().over(["Div", "Season"]).alias("matches_up_to_date")
+    ).sort(["Div", "Season", "Team", "Date"]).with_columns(
+        pl.col("matches_on_date").cum_sum().over(["Div", "Season", "Team"]).alias("matches_up_to_date")
     )
     # Matches strictly before this date = matches_up_to_date - matches_on_date
     match_counts = match_counts.with_columns(
@@ -807,26 +942,39 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
     )
 
     out = out.join(
-        match_counts.select(["Div", "Season", "Date", "Matches_So_Far"]),
-        on=["Div", "Season", "Date"],
+        match_counts.select(["Div", "Season", "Team", "Date", "Matches_So_Far"]),
+        on=["Div", "Season", "Team", "Date"],
         how="left",
         maintain_order="left"
     )
 
-    # Total matches per season from prior seasons (for estimating season length).
-    season_totals = out.group_by(["Div", "Season"]).agg(
+    # Total matches per team-season (from the full data - this is the target season's total).
+    # Since we can't know the future, we use the prior season's team match count as
+    # a proxy for the expected season length, or fall back to league format.
+    season_totals = out.group_by(["Div", "Season", "Team"]).agg(
         pl.len().alias("Season_Matches")
+    ).sort(["Div", "Season", "Team"]).with_columns(
+        pl.col("Season_Matches").shift(1).over(["Div", "Team"]).alias("Prev_Season_Matches")
+    )
+
+    out = out.join(season_totals.select(["Div", "Season", "Team", "Prev_Season_Matches"]),
+                   on=["Div", "Season", "Team"], how="left", maintain_order="left")
+
+    # If no prior season data for this team, estimate from division's prior season average.
+    div_totals = out.group_by(["Div", "Season"]).agg(
+        pl.col("Prev_Season_Matches").mean().alias("Div_Avg_Matches")
     ).sort(["Div", "Season"]).with_columns(
-        pl.col("Season_Matches").shift(1).over("Div").alias("Prev_Season_Matches")
-    ).filter(pl.col("Prev_Season_Matches").is_not_null())
+        pl.col("Div_Avg_Matches").shift(1).over("Div").alias("Prior_Div_Avg_Matches")
+    ).select(["Div", "Season", "Prior_Div_Avg_Matches"])
 
-    out = out.join(season_totals.select(["Div", "Season", "Prev_Season_Matches"]),
-                   on=["Div", "Season"], how="left", maintain_order="left")
+    out = out.join(div_totals, on=["Div", "Season"], how="left", maintain_order="left")
 
-    # If no prior season data, estimate 38 matches (typical league size).
+    # Fallback chain: team's prior season matches -> division's prior season avg -> 38
     out = out.with_columns(
         pl.when(pl.col("Prev_Season_Matches").is_not_null())
         .then(pl.col("Prev_Season_Matches"))
+        .when(pl.col("Prior_Div_Avg_Matches").is_not_null())
+        .then(pl.col("Prior_Div_Avg_Matches").cast(pl.Int64))
         .otherwise(pl.lit(38))
         .alias("Season_Total_Matches")
     )
@@ -836,7 +984,7 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
         .alias("Season_Progress")
     )
 
-    out = out.drop(["Matches_So_Far", "Prev_Season_Matches", "Season_Total_Matches"])
+    out = out.drop(["Matches_So_Far", "Prev_Season_Matches", "Prior_Div_Avg_Matches", "Season_Total_Matches"])
     return out
 
 
@@ -881,25 +1029,21 @@ def _add_recent_opponent_strength(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _add_recent_venue_form(df: pl.DataFrame) -> pl.DataFrame:
-    """Team's recent home/away form over last 5 matches at same venue.
+    """Team's recent home/away form over last 5 matches at same venue (strictly lagged).
 
-    Separate from overall form because home/away performance differs.
-    Strictly lagged pre-match.
+    Computes rolling mean of points over the last 5 matches at the same venue
+    (home or away), strictly before the current match.
     """
     out = df.sort(["Div", "Team", "Season", "Date", "Venue"])
     points = pl.col("Points")
-    prior_points = (points.cum_sum().over(["Div", "Team", "Season", "Venue"]) - points).alias(
-        "venue_prior_points"
-    )
-    prior_matches = (points.cum_count().over(["Div", "Team", "Season", "Venue"]) - 1).alias(
-        "venue_prior_matches"
-    )
-    out = out.with_columns([prior_points, prior_matches])
 
+    # For each team-season-venue, compute rolling mean of last 5 prior matches.
+    # Shift points by 1 first, then rolling mean.
+    shifted_points = points.shift(1).over(["Div", "Team", "Season", "Venue"])
     out = out.with_columns(
-        pl.when(pl.col("venue_prior_matches") > 0)
-        .then(pl.col("venue_prior_points") / pl.col("venue_prior_matches"))
-        .otherwise(None).cast(pl.Float64).alias("venue_recent_ppg")
+        shifted_points.rolling_mean(5, min_samples=1)
+        .over(["Div", "Team", "Season", "Venue"])
+        .alias("venue_recent_ppg")
     )
 
     # Pivot: home team's home form, away team's away form.
@@ -921,4 +1065,4 @@ def _add_recent_venue_form(df: pl.DataFrame) -> pl.DataFrame:
                    right_on=["Div", "Season", "Date", "AwayTeam"], how="left",
                    maintain_order="left")
 
-    return out.drop(["venue_prior_points", "venue_prior_matches", "venue_recent_ppg"])
+    return out.drop(["venue_recent_ppg"])

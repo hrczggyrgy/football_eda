@@ -475,30 +475,36 @@ def add_lagged_team_strength(df: pl.DataFrame) -> pl.DataFrame:
     has_prior = pl.col('Prior_Season_PPG').is_not_null()
     has_hist = pl.col('Hist_League_Avg_PPG').is_not_null()
     mc = pl.col('Matches_Cum_Lagged')
+    prior_pts = pl.col('points_cum_lagged')  # Historical points earned (S in formula)
+    k = pl.lit(5.0)  # Prior strength parameter
 
     out = out.with_columns(pl.col('PreMatch_PPG').alias('PreMatch_PPG_Shrunk'))
 
-    # Case 1: prior season PPG + few current matches
+    # Case 1: prior season PPG available + few current matches
+    # Shrinkage: (S + k*mu) / (n + k)
     mask1 = has_prior & (mc < 5)
     out = out.with_columns(
         pl.when(mask1).then(
-            (pl.col('PreMatch_PPG') * mc + pl.col('Prior_Season_PPG') * (5 - mc)) / 5
+            (prior_pts + pl.col('Prior_Season_PPG') * k) / (mc + k)
         ).otherwise(pl.col('PreMatch_PPG_Shrunk')).alias('PreMatch_PPG_Shrunk')
     )
 
-    # Case 2: historical league avg + few current matches
+    # Case 2: historical league avg available + few current matches
     mask2 = (~has_prior) & has_hist & (mc < 5)
     out = out.with_columns(
         pl.when(mask2).then(
-            (pl.col('PreMatch_PPG') * mc + pl.col('Hist_League_Avg_PPG') * (5 - mc)) / 5
+            (prior_pts + pl.col('Hist_League_Avg_PPG') * k) / (mc + k)
         ).otherwise(pl.col('PreMatch_PPG_Shrunk')).alias('PreMatch_PPG_Shrunk')
     )
 
-    # Case 3: first match ever - leave as NaN
+    # Case 3: no prior season data, no historical league avg, first match ever
+    # PreMatch_PPG is null (no history), so PreMatch_PPG_Shrunk remains null
+    # This is correct - we have no information to form a prior
 
+    # Keep Matches_Cum_Lagged and Hist_League_Avg_PPG for downstream use
     return out.drop([
-        'points_cum_lagged', 'matches_cum_lagged', 'Matches_Cum_Lagged',
-        'Prior_Season_PPG', 'Hist_League_Avg_PPG', 'PreMatch_PPG',
+        'points_cum_lagged', 'matches_cum_lagged',
+        'Prior_Season_PPG', 'PreMatch_PPG',
     ])
 
 
