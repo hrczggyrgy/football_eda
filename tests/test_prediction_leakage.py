@@ -429,6 +429,15 @@ def test_future_fixture_inference_preserves_history():
         v_alt = alt_first.select(col).to_series()[0]
         assert v_known == v_alt, f"Future fixture inference changed {col}: {v_known} vs {v_alt}"
 
+    # Additional test: fixture with different result (simulating unknown future fixture)
+    # The pre-match features should NOT depend on the current match's outcome
+    # We test this by verifying that changing the current match's result doesn't
+    # change the pre-match features (which are computed from PRIOR matches only)
+    for col in ["Matches_Cum_Lagged", "PreMatch_PPG_Shrunk", "Prior_Season_PPG", "Hist_League_Avg_PPG"]:
+        v_known = known_first.select(col).to_series()[0]
+        v_alt = alt_first.select(col).to_series()[0]
+        assert v_known == v_alt, f"Current match result changed {col}: {v_known} vs {v_alt}"
+
 
 # ---------------------------------------------------------------------------
 # Test 11: Feature schema
@@ -471,7 +480,7 @@ def test_offline_online_parity():
     from prediction.features import PRE_MATCH_FEATURE_ALLOWLIST
     # Train on 2122, predict first match of 2223
     # Compare features generated during "training" (with full 2122 + 2223 first match result known) 
-    # vs "inference" (only 2122 available, 2223 first match as future with dummy result)
+    # vs "inference" (only 2122 available, 2223 first match as future with null outcomes)
     
     # Full history including 2223 first match result
     full = [
@@ -490,7 +499,7 @@ def test_offline_online_parity():
          "HF": 11, "AF": 9, "HC": 5, "AC": 4, "HY": 1, "AY": 2, "HR": 0, "AR": 0},
     ]
     
-    # Inference scenario: 2223 season exists but with dummy result
+    # Inference scenario: 2223 season exists but with null outcomes
     inference = [
         {"Div": "E0", "Season": "2122", "Date": date(2021, 9, d),
          "HomeTeam": "A" if i % 2 == 0 else "Opp",
@@ -502,7 +511,7 @@ def test_offline_online_parity():
     ] + [
         {"Div": "E0", "Season": "2223", "Date": date(2022, 9, 1),
          "HomeTeam": "A", "AwayTeam": "B",
-         "FTHG": 0, "FTAG": 0, "HTHG": 0, "HTAG": 0,
+         "FTHG": None, "FTAG": None, "HTHG": 0, "HTAG": 0,
          "HS": 10, "AS": 8, "HST": 4, "AST": 3,
          "HF": 11, "AF": 9, "HC": 5, "AC": 4, "HY": 1, "AY": 2, "HR": 0, "AR": 0},
     ]
@@ -510,19 +519,28 @@ def test_offline_online_parity():
     master_full = _make_master(full)
     tm_full = _tm(master_full)
     f_full = build_pre_match_features(tm_full)
+    p_full = pair_match_features(f_full)
     
     master_inf = _make_master(inference)
     tm_inf = _tm(master_inf)
     f_inf = build_pre_match_features(tm_inf)
+    p_inf = pair_match_features(f_inf)
     
-    # Get Team A's first match of 2223 from both
+    # Get Team A's first match of 2223 from both (team-level features)
     full_first = f_full.filter((pl.col("Season") == "2223") & (pl.col("Team") == "A") & (pl.col("Match_Num") == 1))
     inf_first = f_inf.filter((pl.col("Season") == "2223") & (pl.col("Team") == "A") & (pl.col("Match_Num") == 1))
     
     assert full_first.height == 1, "Full features should have 2223 match"
     assert inf_first.height == 1, "Inference features should have 2223 match"
     
-    # All pre-match features should be identical (pre-match features don't depend on current match result)
+    # Get paired features for the fixture
+    full_paired = p_full.filter((pl.col("Season") == "2223") & (pl.col("HomeTeam") == "A") & (pl.col("AwayTeam") == "B"))
+    inf_paired = p_inf.filter((pl.col("Season") == "2223") & (pl.col("HomeTeam") == "A") & (pl.col("AwayTeam") == "B"))
+    
+    assert full_paired.height == 1, "Full paired should have 2223 match"
+    assert inf_paired.height == 1, "Inference paired should have 2223 match"
+    
+    # All team-level pre-match features should be identical
     feature_cols = [c for c in PRE_MATCH_FEATURE_ALLOWLIST if c in full_first.columns]
     for col in feature_cols:
         v_full = full_first.select(col).to_series()[0]
@@ -531,4 +549,25 @@ def test_offline_online_parity():
             continue
         if isinstance(v_full, float) and np.isnan(v_full) and isinstance(v_inf, float) and np.isnan(v_inf):
             continue
-        assert v_full == v_inf, f"Offline/online parity failed for {col}: {v_full} vs {v_inf}"
+        assert v_full == v_inf, f"Offline/online parity failed for team {col}: {v_full} vs {v_inf}"
+    
+    # All paired pre-match features should be identical
+    paired_cols = [c for c in full_paired.columns if c not in (
+        "Div", "Season", "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR"
+    )]
+    for col in paired_cols:
+        v_full = full_paired.select(col).to_series()[0]
+        v_inf = inf_paired.select(col).to_series()[0]
+        if v_full is None and v_inf is None:
+            continue
+        if isinstance(v_full, float) and np.isnan(v_full) and isinstance(v_inf, float) and np.isnan(v_inf):
+            continue
+        assert v_full == v_inf, f"Offline/online parity failed for paired {col}: {v_full} vs {v_inf}"
+    
+    # Check column order and dtypes match
+    assert list(full_first.columns) == list(inf_first.columns), "Column order differs"
+    assert list(full_paired.columns) == list(inf_paired.columns), "Paired column order differs"
+    for col in full_first.columns:
+        assert full_first[col].dtype == inf_first[col].dtype, f"Dtype mismatch for {col}"
+    for col in full_paired.columns:
+        assert full_paired[col].dtype == inf_paired[col].dtype, f"Paired dtype mismatch for {col}"

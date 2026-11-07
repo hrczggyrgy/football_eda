@@ -120,24 +120,29 @@ def get_git_commit() -> str:
         return "unknown"
 
 
-def get_code_hash() -> str:
-    """Compute hash of all Python source files in src/ and tests/."""
+def get_data_hash(master: pl.DataFrame) -> str:
+    """Compute hash of the master dataset - canonical full dataset hash."""
     hasher = hashlib.sha256()
-    for root in ["src", "tests"]:
-        for path in sorted(Path(root).rglob("*.py")):
-            hasher.update(path.read_bytes())
+    # Hash shape and schema
+    hasher.update(str(master.shape).encode())
+    hasher.update(",".join(sorted(master.columns)).encode())
+    # Hash all data in canonical form (sorted by Div, Date for determinism)
+    canonical = master.sort(["Div", "Date"]).write_csv()
+    hasher.update(canonical.encode())
     return hasher.hexdigest()[:16]
 
 
-def get_data_hash(master: pl.DataFrame) -> str:
-    """Compute hash of the master dataset."""
-    # Hash based on shape, columns, and a sample of data
+def get_code_hash() -> str:
+    """Compute hash of all Python source files in src/ and tests/ from repo root."""
     hasher = hashlib.sha256()
-    hasher.update(str(master.shape).encode())
-    hasher.update(",".join(sorted(master.columns)).encode())
-    # Sample first 1000 rows for hashing
-    sample = master.head(min(1000, master.height)).write_csv()
-    hasher.update(sample.encode())
+    repo_root = Path(__file__).resolve().parent
+    for root in ["src", "tests", "benchmark_reproducible.py"]:
+        path = repo_root / root
+        if path.is_file():
+            hasher.update(path.read_bytes())
+        elif path.is_dir():
+            for p in sorted(path.rglob("*.py")):
+                hasher.update(p.read_bytes())
     return hasher.hexdigest()[:16]
 
 
@@ -161,8 +166,8 @@ class BenchmarkMetadata:
     sklearn_version: str
 
 
-def create_model_factory(name: str, config: Dict):
-    """Create a model factory function from config."""
+def create_model_factory(name: str, config: Dict, seed: int):
+    """Create a model factory function from config with seed override."""
     from prediction.models import (
         HistoricalBaseline, PoissonModel, MultinomialModel,
         SmallLogisticModel, EloLogisticModel, FittedPoissonModel,
@@ -181,6 +186,8 @@ def create_model_factory(name: str, config: Dict):
     
     model_class = factory_map[config["factory"]]
     params = config["params"].copy()
+    # Override seed with benchmark seed
+    params["seed"] = seed
     
     def factory():
         return model_class(**params)
@@ -249,7 +256,7 @@ def run_benchmark(
     
     # ----------------------------------------------------------------- Validation
     print("\n[3/6] Running expanding-window chronological validation...")
-    factories = {name: create_model_factory(name, cfg) for name, cfg in BENCHMARK_MODELS.items()}
+    factories = {name: create_model_factory(name, cfg, seed) for name, cfg in BENCHMARK_MODELS.items()}
     
     results = compare_models_validation(
         master, team_matches, factories, seasons=seasons, seed=seed,

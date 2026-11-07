@@ -496,11 +496,10 @@ def _add_form_momentum(df: pl.DataFrame) -> pl.DataFrame:
     out = df
     need = {"Points_L3", "Points_L5"} <= set(out.columns)
     if need:
-        # Only compute momentum when we have at least 5 prior matches (L5 has 5 samples)
-        # Points_L5 with min_samples=5 means it has 5 valid observations.
-        # Since our rolling uses min_samples=1, we need to check actual count.
+        # Match_Num is 1-based (current match number). Prior matches = Match_Num - 1.
+        # Require at least 5 prior matches for a complete L5 window.
         out = out.with_columns(
-            pl.when(pl.col("Points_L5").is_not_null() & pl.col("Points_L3").is_not_null())
+            pl.when((pl.col("Match_Num") > 5) & pl.col("Points_L5").is_not_null() & pl.col("Points_L3").is_not_null())
             .then(
                 (pl.col("Points_L3") - ((pl.col("Points_L5") * 5
                                          - pl.col("Points_L3") * 3) / 2.0))
@@ -960,21 +959,22 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
     out = out.join(season_totals.select(["Div", "Season", "Team", "Prev_Season_Matches"]),
                    on=["Div", "Season", "Team"], how="left", maintain_order="left")
 
-    # If no prior season data for this team, estimate from division's prior season average.
+    # If no prior season data for this team, estimate from division's prior season total.
+    # Compute total matches per division per season, then shift once.
     div_totals = out.group_by(["Div", "Season"]).agg(
-        pl.col("Prev_Season_Matches").mean().alias("Div_Avg_Matches")
+        pl.len().alias("Div_Season_Matches")
     ).sort(["Div", "Season"]).with_columns(
-        pl.col("Div_Avg_Matches").shift(1).over("Div").alias("Prior_Div_Avg_Matches")
-    ).select(["Div", "Season", "Prior_Div_Avg_Matches"])
+        pl.col("Div_Season_Matches").shift(1).over("Div").alias("Prior_Div_Matches")
+    ).select(["Div", "Season", "Prior_Div_Matches"])
 
     out = out.join(div_totals, on=["Div", "Season"], how="left", maintain_order="left")
 
-    # Fallback chain: team's prior season matches -> division's prior season avg -> 38
+    # Fallback chain: team's prior season matches -> division's prior season total -> 38
     out = out.with_columns(
         pl.when(pl.col("Prev_Season_Matches").is_not_null())
         .then(pl.col("Prev_Season_Matches"))
-        .when(pl.col("Prior_Div_Avg_Matches").is_not_null())
-        .then(pl.col("Prior_Div_Avg_Matches").cast(pl.Int64))
+        .when(pl.col("Prior_Div_Matches").is_not_null())
+        .then(pl.col("Prior_Div_Matches").cast(pl.Int64))
         .otherwise(pl.lit(38))
         .alias("Season_Total_Matches")
     )
@@ -984,7 +984,7 @@ def _add_season_progress(df: pl.DataFrame) -> pl.DataFrame:
         .alias("Season_Progress")
     )
 
-    out = out.drop(["Matches_So_Far", "Prev_Season_Matches", "Prior_Div_Avg_Matches", "Season_Total_Matches"])
+    out = out.drop(["Matches_So_Far", "Prev_Season_Matches", "Prior_Div_Matches", "Season_Total_Matches"])
     return out
 
 
