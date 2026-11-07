@@ -402,6 +402,29 @@ def pair_match_features(team_features: pl.DataFrame) -> pl.DataFrame:
         .alias("GA_Cum_Gap"),
         (pl.col("Home_Rest_Days") - pl.col("Away_Rest_Days"))
         .alias("Rest_Days_Diff"),
+        # Draw-predictive features (use prefixed column names)
+        # Small PPG gap -> teams evenly matched -> more draws
+        (pl.col("Home_PreMatch_PPG_Shrunk") - pl.col("Away_PreMatch_PPG_Shrunk"))
+        .abs().alias("PPG_Gap_Abs"),
+        # Small Elo diff -> teams evenly matched -> more draws
+        (pl.col("Home_Elo_Rating_Diff")).abs().alias("Elo_Rating_Diff_Abs"),
+        # Low combined scoring rate -> low scoring matches -> more draws
+        (pl.col("Home_League_Avg_GF_PG") + pl.col("Home_League_Avg_GA_PG")).alias("League_Total_Goals_PG"),
+        # Both teams defensive (low GA per game) -> low scoring -> more draws
+        (pl.col("Home_GA_Cum") + pl.col("Away_GA_Cum")).alias("Combined_GA_Cum"),
+        (pl.col("Home_Home_GF_PG") + pl.col("Away_Away_GF_PG")).alias("Combined_Venue_GF_PG"),
+        # Historical H2H draw rate (approximate from PPG)
+        pl.when((pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches")) > 0)
+        .then((pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches") - 
+               (pl.col("Home_H2H_PPG") * pl.col("Home_H2H_Matches") / 3.0 + 
+                pl.col("Away_H2H_PPG") * pl.col("Away_H2H_Matches") / 3.0)) /
+              (pl.col("Home_H2H_Matches") + pl.col("Away_H2H_Matches")))
+        .otherwise(None).alias("H2H_Draw_Rate"),
+        # Both teams low scoring
+        (pl.col("Home_GF_Cum") + pl.col("Away_GF_Cum")).alias("Combined_GF_Cum"),
+        # Season progress (late season, both teams need points -> more draws)
+        pl.when((pl.col("Home_Season_Progress") > 0.7) & (pl.col("Away_Season_Progress") > 0.7))
+        .then(1).otherwise(0).alias("Late_Season_Both"),
     ])
 
     return matched.sort(["Div", "Date", "HomeTeam", "AwayTeam"])

@@ -164,7 +164,7 @@ def main():
         return PoissonModel(seed=args.seed, use_dixon_coles=False)
 
     def factory_multinomial():
-        return MultinomialModel(seed=args.seed, C=None, calibrate=True)
+        return MultinomialModel(seed=args.seed, C=None, calibrate=True, class_weight="balanced")
 
     def factory_small_logistic():
         return SmallLogisticModel(seed=args.seed, C=None, calibrate=False)

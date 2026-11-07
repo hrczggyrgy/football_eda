@@ -85,6 +85,10 @@ def _paired_feature_names() -> List[str]:
         "League_Avg_GF_PG", "League_Avg_GA_PG",
         "Elo_Exp_Home", "Elo_Rating_Diff",
         "PPG_Gap", "GF_Cum_Gap", "GA_Cum_Gap", "Rest_Days_Diff",
+        # New draw-predictive features
+        "PPG_Gap_Abs", "Elo_Rating_Diff_Abs", "League_Total_Goals_PG",
+        "Combined_GA_Cum", "Combined_Venue_GF_PG", "H2H_Draw_Rate",
+        "Combined_GF_Cum", "Late_Season_Both",
     }
     team_only = [f for f in _BASE_TEAM_FEATURES
                  if f not in already_prefixed and f not in match_level]
@@ -482,13 +486,15 @@ class MultinomialModel:
     def __init__(self, seed: int = 42, C: Optional[float] = None,
                  max_iter: int = 1000, calibrate: bool = True,
                  n_inner_folds: int = 2,
-                 calibration_method: str = "platt"):
+                 calibration_method: str = "platt",
+                 class_weight: Optional[str] = "balanced"):
         self.seed = seed
         self.C = C  # If None, tuned via inner chronological validation.
         self.max_iter = max_iter
         self.calibrate = calibrate
         self.n_inner_folds = n_inner_folds
         self.calibration_method = calibration_method  # "platt" or "isotonic"
+        self.class_weight = class_weight  # "balanced" or None
         self.fitted = False
         self.model: Optional[LogisticRegression] = None
         self.scaler: Optional[StandardScaler] = None
@@ -650,6 +656,7 @@ class MultinomialModel:
                     model = LogisticRegression(
                         C=cand, solver="lbfgs", max_iter=self.max_iter,
                         random_state=self.seed,
+                        class_weight=self.class_weight,
                     )
                     model.fit(X_train_scaled, y[train_idx])
                     val_probs = model.predict_proba(X_val_scaled)
@@ -675,6 +682,7 @@ class MultinomialModel:
                 model = LogisticRegression(
                     C=best_C, solver="lbfgs", max_iter=self.max_iter,
                     random_state=self.seed,
+                    class_weight=self.class_weight,
                 )
                 model.fit(X_train_scaled, y_train)
                 val_probs = model.predict_proba(X_val_scaled)
@@ -693,6 +701,7 @@ class MultinomialModel:
         self.model = LogisticRegression(
             C=best_C, solver="lbfgs", max_iter=self.max_iter,
             random_state=self.seed,
+            class_weight=self.class_weight,
         )
         self.model.fit(Xs, y)
         self.feature_names = names
@@ -1155,11 +1164,13 @@ class SmallLogisticModel:
     """
     
     def __init__(self, seed: int = 42, C: Optional[float] = None,
-                 max_iter: int = 1000, calibrate: bool = False):
+                 max_iter: int = 1000, calibrate: bool = False,
+                 class_weight: Optional[str] = None):
         self.seed = seed
         self.C = C  # If None, tuned via inner chronological validation
         self.max_iter = max_iter
         self.calibrate = calibrate
+        self.class_weight = class_weight
         self.fitted = False
         self.model: Optional[LogisticRegression] = None
         self.scaler: Optional[StandardScaler] = None
@@ -1293,6 +1304,7 @@ class SmallLogisticModel:
                     model = LogisticRegression(
                         C=cand, solver="lbfgs", max_iter=self.max_iter,
                         random_state=self.seed,
+                        class_weight=self.class_weight,
                     )
                     model.fit(X_train_scaled, y[train_idx])
                     val_probs = model.predict_proba(X_val_scaled)
@@ -1315,6 +1327,7 @@ class SmallLogisticModel:
                 model = LogisticRegression(
                     C=best_C, solver="lbfgs", max_iter=self.max_iter,
                     random_state=self.seed,
+                    class_weight=self.class_weight,
                 )
                 model.fit(X_train_scaled, y[train_idx])
                 val_probs = model.predict_proba(X_val_scaled)
@@ -1401,11 +1414,13 @@ class EloLogisticModel:
     """
     
     def __init__(self, seed: int = 42, C: Optional[float] = None,
-                 max_iter: int = 1000, calibrate: bool = True):
+                 max_iter: int = 1000, calibrate: bool = True,
+                 class_weight: Optional[str] = None):
         self.seed = seed
         self.C = C
         self.max_iter = max_iter
         self.calibrate = calibrate
+        self.class_weight = class_weight
         self.fitted = False
         self.model: Optional[LogisticRegression] = None
         self.scaler: Optional[StandardScaler] = None
@@ -1537,6 +1552,7 @@ class EloLogisticModel:
                     model = LogisticRegression(
                         C=cand, solver="lbfgs", max_iter=self.max_iter,
                         random_state=self.seed,
+                        class_weight=self.class_weight,
                     )
                     model.fit(X_train_scaled, y[train_idx])
                     val_probs = model.predict_proba(X_val_scaled)
@@ -1558,6 +1574,7 @@ class EloLogisticModel:
                 model = LogisticRegression(
                     C=best_C, solver="lbfgs", max_iter=self.max_iter,
                     random_state=self.seed,
+                    class_weight=self.class_weight,
                 )
                 model.fit(X_train_scaled, y[train_idx])
                 val_probs = model.predict_proba(X_val_scaled)
@@ -1575,6 +1592,7 @@ class EloLogisticModel:
         self.model = LogisticRegression(
             C=best_C, solver="lbfgs", max_iter=self.max_iter,
             random_state=self.seed,
+            class_weight=self.class_weight,
         )
         self.model.fit(Xs, y)
         self.feature_names = names
@@ -1589,6 +1607,7 @@ class EloLogisticModel:
             cal = LogisticRegression(
                 C=1.0, solver="lbfgs", max_iter=self.max_iter,
                 random_state=self.seed,
+                class_weight=self.class_weight,
             )
             cal.fit(O, Y)
             self.calibrator = cal
@@ -1922,4 +1941,343 @@ class RestrictedHGBModel:
             fitted=True, feature_names=self.feature_names,
             metadata={"max_iter": self.max_iter, "max_leaf_nodes": self.max_leaf_nodes,
                       "max_depth": self.max_depth, "learning_rate": self.learning_rate},
+        )
+
+
+class TwoStageModel:
+    """Two-stage model: Stage 1 predicts Draw vs Non-Draw, Stage 2 predicts Home vs Away.
+    
+    This approach often improves draw prediction by explicitly modeling the draw decision
+    separately from the home/away decision. Uses the same features for both stages.
+    """
+    
+    def __init__(self, seed: int = 42, C: Optional[float] = None,
+                 max_iter: int = 1000, calibrate: bool = True,
+                 class_weight: Optional[str] = "balanced"):
+        self.seed = seed
+        self.C = C
+        self.max_iter = max_iter
+        self.calibrate = calibrate
+        self.class_weight = class_weight
+        self.fitted = False
+        self.draw_model: Optional[LogisticRegression] = None
+        self.ha_model: Optional[LogisticRegression] = None
+        self.draw_scaler: Optional[StandardScaler] = None
+        self.ha_scaler: Optional[StandardScaler] = None
+        self.feature_names: List[str] = BASE_FEATURES.copy()
+        self.classes_: np.ndarray = np.array([0, 1, 2])
+        self.C_used: Optional[float] = None
+        self.impute_: Optional[np.ndarray] = None
+        self.draw_calibrator: Optional[object] = None
+        self.ha_calibrator: Optional[object] = None
+    
+    def _feature_frame(self, matches: pl.DataFrame) -> Tuple[np.ndarray, List[str]]:
+        import polars as pl
+        available = [c for c in self.feature_names if c in matches.columns]
+        if not available:
+            raise ValueError("No features available in match frame.")
+        X = matches.select(available).to_numpy().astype(np.float64)
+        return X, available
+    
+    def _impute_fit(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        X = X.copy()
+        impute_values = np.full(X.shape[1], 0.0, dtype=np.float64)
+        for j in range(X.shape[1]):
+            col = X[:, j]
+            finite = np.isfinite(col)
+            impute_values[j] = float(np.mean(col[finite])) if np.any(finite) else 0.0
+            X[:, j] = np.where(finite, col, impute_values[j])
+        return X, impute_values
+    
+    def _impute_transform(self, X: np.ndarray, impute_values: Optional[np.ndarray] = None) -> np.ndarray:
+        X = X.copy()
+        if impute_values is None:
+            impute_values = getattr(self, "impute_", np.full(X.shape[1], 0.0, dtype=np.float64))
+        for j in range(X.shape[1]):
+            fill = impute_values[j] if j < len(impute_values) else 0.0
+            X[:, j] = np.where(np.isfinite(X[:, j]), X[:, j], fill)
+        return X
+    
+    @staticmethod
+    def _inner_chronological_splits(dates: np.ndarray, n_folds: int = 3,
+                                     min_train_dates: int = 20) -> List[Tuple[np.ndarray, np.ndarray]]:
+        unique_dates = np.sort(np.unique(dates))
+        if len(unique_dates) < min_train_dates + n_folds:
+            if len(unique_dates) < n_folds + 1:
+                return []
+            split_points = np.linspace(1, len(unique_dates) - 1, n_folds).astype(int)
+            splits = []
+            for sp in split_points:
+                cut = unique_dates[sp]
+                train_idx = np.where(dates < cut)[0]
+                val_idx = np.where(dates >= cut)[0]
+                if len(train_idx) > 0 and len(val_idx) > 0:
+                    splits.append((train_idx, val_idx))
+            return splits
+        
+        train_end = min_train_dates
+        val_block_size = max(1, (len(unique_dates) - train_end) // n_folds)
+        splits = []
+        
+        for fold in range(n_folds):
+            val_start = train_end
+            val_end = min(val_start + val_block_size, len(unique_dates) - (n_folds - fold - 1))
+            if val_start >= val_end:
+                break
+            
+            train_dates = unique_dates[:train_end]
+            val_dates = unique_dates[val_start:val_end]
+            
+            train_idx = np.where(np.isin(dates, train_dates))[0]
+            val_idx = np.where(np.isin(dates, val_dates))[0]
+            
+            if len(train_idx) > 0 and len(val_idx) > 0:
+                splits.append((train_idx, val_idx))
+            
+            train_end = val_end
+        
+        return splits
+    
+    def fit(self, team_matches: pl.DataFrame, matches: pl.DataFrame) -> "TwoStageModel":
+        import polars as pl
+        
+        X, names = self._feature_frame(matches)
+        y = encode_outcomes(matches.select(pl.col("FTR")).to_series())
+        
+        valid = y >= 0
+        X = X[valid]; y = y[valid]
+        dates = matches.select(pl.col("Date")).to_numpy().ravel()[valid]
+        
+        if X.shape[0] == 0 or len(np.unique(y)) < 2:
+            raise ValueError("Insufficient valid training data for two-stage model.")
+        
+        # Create binary targets
+        y_draw = (y == 1).astype(int)  # 1 = draw, 0 = non-draw
+        y_ha = np.where(y == 0, 0, 1)  # 0 = home, 1 = away (for non-draw matches)
+        non_draw_mask = y != 1
+        
+        # Tune C for both stages with fold-local preprocessing
+        candidate_Cs = [self.C] if self.C is not None else [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+        
+        splits = self._inner_chronological_splits(dates, 3)
+        valid_splits = []
+        for train_idx, val_idx in splits:
+            if len(np.unique(y[train_idx])) < 2 or len(np.unique(y[val_idx])) < 2:
+                continue
+            valid_splits.append((train_idx, val_idx))
+        
+        best_C_draw = best_C_ha = candidate_Cs[0]
+        oof_draw_probs = []
+        oof_draw_y = []
+        oof_ha_probs = []
+        oof_ha_y = []
+        
+        if len(valid_splits) >= 2:
+            # Stage 1: Draw vs Non-Draw
+            best_brier = float("inf")
+            for cand in candidate_Cs:
+                fold_briers = []
+                for train_idx, val_idx in valid_splits:
+                    X_train = X[train_idx]
+                    X_val = X[val_idx]
+                    X_train_imputed, impute_values = self._impute_fit(X_train)
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train_imputed)
+                    X_val_imputed = self._impute_transform(X_val, impute_values)
+                    X_val_scaled = scaler.transform(X_val_imputed)
+                    
+                    model = LogisticRegression(
+                        C=cand, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed, class_weight=self.class_weight,
+                    )
+                    model.fit(X_train_scaled, y_draw[train_idx])
+                    val_probs = model.predict_proba(X_val_scaled)
+                    fold_briers.append(brier_score_multiclass(val_probs, y_draw[val_idx]))
+                mean_brier = float(np.mean(fold_briers))
+                if mean_brier < best_brier:
+                    best_brier = mean_brier
+                    best_C_draw = cand
+            
+            # Stage 2: Home vs Away (non-draw only)
+            best_brier = float("inf")
+            for cand in candidate_Cs:
+                fold_briers = []
+                for train_idx, val_idx in valid_splits:
+                    # Only non-draw matches in training
+                    train_nd = train_idx[non_draw_mask[train_idx]]
+                    val_nd = val_idx[non_draw_mask[val_idx]]
+                    if len(train_nd) < 10 or len(val_nd) < 10:
+                        continue
+                    X_train = X[train_nd]
+                    X_val = X[val_nd]
+                    X_train_imputed, impute_values = self._impute_fit(X_train)
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train_imputed)
+                    X_val_imputed = self._impute_transform(X_val, impute_values)
+                    X_val_scaled = scaler.transform(X_val_imputed)
+                    
+                    model = LogisticRegression(
+                        C=cand, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed, class_weight=self.class_weight,
+                    )
+                    model.fit(X_train_scaled, y_ha[train_nd])
+                    val_probs = model.predict_proba(X_val_scaled)
+                    fold_briers.append(brier_score_multiclass(val_probs, y_ha[val_nd]))
+                mean_brier = float(np.mean(fold_briers))
+                if mean_brier < best_brier:
+                    best_brier = mean_brier
+                    best_C_ha = cand
+            
+            # Collect OOF predictions for calibration
+            for train_idx, val_idx in valid_splits:
+                # Stage 1 OOF
+                X_train = X[train_idx]
+                X_val = X[val_idx]
+                X_train_imputed, impute_values = self._impute_fit(X_train)
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train_imputed)
+                X_val_imputed = self._impute_transform(X_val, impute_values)
+                X_val_scaled = scaler.transform(X_val_imputed)
+                
+                model = LogisticRegression(
+                    C=best_C_draw, solver="lbfgs", max_iter=self.max_iter,
+                    random_state=self.seed, class_weight=self.class_weight,
+                )
+                model.fit(X_train_scaled, y_draw[train_idx])
+                val_probs = model.predict_proba(X_val_scaled)
+                oof_draw_probs.append(val_probs)
+                oof_draw_y.append(y_draw[val_idx])
+                
+                # Stage 2 OOF
+                train_nd = train_idx[non_draw_mask[train_idx]]
+                val_nd = val_idx[non_draw_mask[val_idx]]
+                if len(train_nd) >= 10 and len(val_nd) >= 10:
+                    X_train = X[train_nd]
+                    X_val = X[val_nd]
+                    X_train_imputed, impute_values = self._impute_fit(X_train)
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train_imputed)
+                    X_val_imputed = self._impute_transform(X_val, impute_values)
+                    X_val_scaled = scaler.transform(X_val_imputed)
+                    
+                    model = LogisticRegression(
+                        C=best_C_ha, solver="lbfgs", max_iter=self.max_iter,
+                        random_state=self.seed, class_weight=self.class_weight,
+                    )
+                    model.fit(X_train_scaled, y_ha[train_nd])
+                    val_probs = model.predict_proba(X_val_scaled)
+                    oof_ha_probs.append(val_probs)
+                    oof_ha_y.append(y_ha[val_nd])
+        else:
+            best_C_draw = best_C_ha = candidate_Cs[0]
+        
+        self.C_used = float(best_C_draw)
+        self.best_C_draw = float(best_C_draw)
+        self.best_C_ha = float(best_C_ha)
+        
+        # Refit on all data
+        X_imputed, impute_values = self._impute_fit(X)
+        
+        # Stage 1: Draw vs Non-Draw
+        self.draw_scaler = StandardScaler()
+        Xs_draw = self.draw_scaler.fit_transform(X_imputed)
+        self.draw_model = LogisticRegression(
+            C=best_C_draw, solver="lbfgs", max_iter=self.max_iter,
+            random_state=self.seed, class_weight=self.class_weight,
+        )
+        self.draw_model.fit(Xs_draw, y_draw)
+        
+        # Stage 2: Home vs Away (non-draw only)
+        X_nd = X[non_draw_mask]
+        y_ha_nd = y_ha[non_draw_mask]
+        X_nd_imputed, _ = self._impute_fit(X_nd)
+        self.ha_scaler = StandardScaler()
+        Xs_ha = self.ha_scaler.fit_transform(X_nd_imputed)
+        self.ha_model = LogisticRegression(
+            C=best_C_ha, solver="lbfgs", max_iter=self.max_iter,
+            random_state=self.seed, class_weight=self.class_weight,
+        )
+        self.ha_model.fit(Xs_ha, y_ha_nd)
+        
+        self.feature_names = names
+        self.fitted = True
+        self.classes_ = np.array([0, 1, 2])
+        self.impute_ = impute_values
+        
+        # Calibration using Platt scaling on LOGITS (not probabilities)
+        if self.calibrate and len(oof_draw_probs) > 0:
+            O_draw = np.vstack(oof_draw_probs)
+            Y_draw = np.concatenate(oof_draw_y)
+            # Convert probabilities to logits for Platt scaling
+            logits_draw = np.log(np.clip(O_draw[:, 1] / O_draw[:, 0], 1e-6, 1e6)).reshape(-1, 1)
+            cal_draw = LogisticRegression(C=1.0, solver="lbfgs", max_iter=self.max_iter,
+                                          random_state=self.seed, class_weight=self.class_weight)
+            cal_draw.fit(logits_draw, Y_draw)
+            self.draw_calibrator = cal_draw
+            
+            if len(oof_ha_probs) > 0:
+                O_ha = np.vstack(oof_ha_probs)
+                Y_ha = np.concatenate(oof_ha_y)
+                logits_ha = np.log(np.clip(O_ha[:, 1] / O_ha[:, 0], 1e-6, 1e6)).reshape(-1, 1)
+                cal_ha = LogisticRegression(C=1.0, solver="lbfgs", max_iter=self.max_iter,
+                                            random_state=self.seed, class_weight=self.class_weight)
+                cal_ha.fit(logits_ha, Y_ha)
+                self.ha_calibrator = cal_ha
+        
+        return self
+    
+    def predict(self, matches: pl.DataFrame) -> ModelResult:
+        if not self.fitted:
+            raise RuntimeError("Two-stage model must be fitted before prediction.")
+        import polars as pl
+        
+        X, _ = self._feature_frame(matches)
+        X = self._impute_transform(X, self.impute_)
+        
+        # Stage 1: Draw probability
+        Xs_draw = self.draw_scaler.transform(X)
+        draw_probs = self.draw_model.predict_proba(Xs_draw)  # [p_non_draw, p_draw]
+        p_draw = draw_probs[:, 1]
+        p_non_draw = draw_probs[:, 0]
+        
+        # Apply draw calibration if available (using logits)
+        if self.draw_calibrator is not None:
+            logits_draw = np.log(np.clip(p_draw / p_non_draw, 1e-6, 1e6)).reshape(-1, 1)
+            p_draw_cal = self.draw_calibrator.predict_proba(logits_draw)[:, 1]
+            p_non_draw_cal = 1 - p_draw_cal
+        else:
+            p_draw_cal = p_draw
+            p_non_draw_cal = p_non_draw
+        
+        # Stage 2: Home vs Away (conditional on non-draw)
+        Xs_ha = self.ha_scaler.transform(X)
+        ha_probs = self.ha_model.predict_proba(Xs_ha)  # [p_home|non_draw, p_away|non_draw]
+        p_home_given_nd = ha_probs[:, 0]
+        p_away_given_nd = ha_probs[:, 1]
+        
+        # Apply HA calibration if available (using logits)
+        if self.ha_calibrator is not None:
+            logits_ha = np.log(np.clip(p_away_given_nd / p_home_given_nd, 1e-6, 1e6)).reshape(-1, 1)
+            ha_cal = self.ha_calibrator.predict_proba(logits_ha)
+            p_home_given_nd = ha_cal[:, 0]
+            p_away_given_nd = ha_cal[:, 1]
+        
+        # Combine: p_home = p_non_draw * p_home|non_draw, etc.
+        p_home = p_non_draw_cal * p_home_given_nd
+        p_away = p_non_draw_cal * p_away_given_nd
+        p_draw_final = p_draw_cal
+        
+        # Normalize
+        out = np.column_stack([p_home, p_draw_final, p_away])
+        out = out / out.sum(axis=1, keepdims=True)
+        
+        return ModelResult(
+            model_name="two_stage",
+            outcome_probs=out,
+            home_lambda=None,
+            away_lambda=None,
+            fitted=True,
+            feature_names=self.feature_names,
+            metadata={"C_draw": self.best_C_draw, "C_ha": self.best_C_ha,
+                      "calibrated": self.calibrate},
         )
